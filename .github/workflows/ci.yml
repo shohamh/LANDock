@@ -72,8 +72,11 @@ jobs:
         shell: pwsh
         run: |
           $dir = Join-Path $env:RUNNER_TEMP 'landock-install'
-          $p = Start-Process dist/LANDock-Setup-0.0.0-ci.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir", '/TASKS=""' -Wait -PassThru
+          # the installer starts the app when it is done, so wait for the installer process only (Start-Process -Wait would wait for the app too)
+          $p = Start-Process dist/LANDock-Setup-0.0.0-ci.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir", '/TASKS=""' -PassThru
+          if (-not $p.WaitForExit(300000)) { throw 'the installer did not finish in 5 minutes' }
           if ($p.ExitCode -ne 0) { throw "installer exit code $($p.ExitCode)" }
+          Get-Process LANDock -ErrorAction SilentlyContinue | Stop-Process -Force
           foreach ($f in 'LANDock.exe', 'host\bin\sunshine.exe', 'host\VERSION.txt', 'client\moonlight\Moonlight.exe', 'client\VERSION.txt') {
             if (-not (Test-Path (Join-Path $dir $f))) { throw "missing after install: $f" }
           }
