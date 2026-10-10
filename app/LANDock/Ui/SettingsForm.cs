@@ -260,7 +260,7 @@ public sealed class SettingsForm : Form
         _updRepo = new TextBox { Width = 240 };
         col.Controls.Add(Row(new Label { Text = "GitHub repository:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _updRepo));
         _updToken = new TextBox { Width = 300, UseSystemPasswordChar = true };
-        col.Controls.Add(Row(new Label { Text = "Access token (only while the repository is private):", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _updToken));
+        col.Controls.Add(Row(new Label { Text = "Access token (optional; only for a private copy of the repository):", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _updToken));
 
         _updCheck = new Button { Text = "Check now", AutoSize = true, MinimumSize = new Size(110, 28) };
         _updInstall = new Button { Text = "Install update", AutoSize = true, MinimumSize = new Size(120, 28), Visible = false };

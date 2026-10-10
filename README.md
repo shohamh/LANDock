@@ -59,8 +59,7 @@ pre-releases). Each release lists a version and checksum for three parts (the ap
 that changed are downloaded and installed, and host and client parts wait until nothing is streaming when
 installing automatically. A release is only offered after its checksum matched.
 
-While this repository is private, enter a GitHub access token (read access to releases) in the Updates tab; once it is
-public no token is needed.
+No access token is needed: the repository and its releases are public. (The Updates tab has an optional token field for a private copy of the repository.)
 
 ## How it works
 
