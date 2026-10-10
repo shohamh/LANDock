@@ -1,0 +1,161 @@
+name: Build from source
+
+# Builds what LANDock compiles from source:
+#   app       the LANDock program (C#, self-contained single file; unit tests run first) -> artifact "app-exe"
+# and, from our forks:
+#   host      Apollo (patched) + vddtool  -> artifact "host-bin"
+#   moonlight Moonlight (moonlight-qt)    -> artifact "moonlight-portable"
+# By default it builds the exact commits pinned in scripts/versions.env. Run it by hand (Actions > Build from source >
+# Run workflow) with other refs to test a candidate, for example the branch that scripts/sync-upstream.sh creates after
+# pulling upstream changes. The release workflow calls this one.
+
+on:
+  workflow_call:
+    inputs:
+      apollo_ref:
+        description: 'Apollo branch/tag/commit to build instead of the pinned one (empty = pinned commit)'
+        type: string
+        default: ''
+      moonlight_ref:
+        description: 'Moonlight branch/tag/commit to build instead of the pinned one (empty = pinned commit)'
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      apollo_ref:
+        description: 'Apollo branch/tag/commit in the fork to build instead of the pinned one (empty = pinned commit)'
+        required: false
+        default: ''
+      moonlight_ref:
+        description: 'Moonlight branch/tag/commit in the fork to build instead of the pinned one (empty = pinned commit)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    name: LANDock app (tests and single-file build)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Unit tests
+        run: dotnet test app/LANDock.Tests -c Release
+
+      - name: Version for this build
+        id: ver
+        shell: bash
+        run: echo "version=$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Publish (self-contained, single file)
+        run: dotnet publish app/LANDock/LANDock.csproj -c Release -p:Version=${{ steps.ver.outputs.version }} -o app-out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-exe
+          path: app-out/LANDock.exe
+          if-no-files-found: error
+
+  host:
+    name: Host (Apollo, patched) and vddtool
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit       # keep the runner's Node.js on PATH (Apollo's web UI build needs it)
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-cppwinrt
+            mingw-w64-ucrt-x86_64-curl-winssl
+            mingw-w64-ucrt-x86_64-MinHook
+            mingw-w64-ucrt-x86_64-miniupnpc
+            mingw-w64-ucrt-x86_64-onevpl
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-nlohmann_json
+
+      - name: Choose what to build
+        shell: bash
+        env:
+          APOLLO_REF_INPUT: ${{ inputs.apollo_ref }}
+        run: |
+          # only override the pinned commit when a ref was given
+          if [ -n "$APOLLO_REF_INPUT" ]; then
+            echo "APOLLO_REF=$APOLLO_REF_INPUT" >> "$GITHUB_ENV"
+            echo "APOLLO_COMMIT=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build Apollo and vddtool
+        shell: msys2 {0}
+        run: ./scripts/build-host.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: host-bin
+          path: host/bin
+          if-no-files-found: error
+
+  moonlight:
+    name: Moonlight (moonlight-qt)
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the pinned versions
+        id: v
+        shell: bash
+        run: |
+          set -a; source scripts/versions.env; set +a
+          echo "qt=$MOONLIGHT_QT_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Choose what to build
+        id: pick
+        shell: bash
+        env:
+          MOONLIGHT_REF_INPUT: ${{ inputs.moonlight_ref }}
+        run: |
+          if [ -n "$MOONLIGHT_REF_INPUT" ]; then
+            echo "args=-Ref $MOONLIGHT_REF_INPUT -Commit ''" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The next two steps are Moonlight's own CI steps for Windows (see .github/workflows/build-win-mac.yml upstream).
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          cache: true
+          set-env: false
+          add-tools-to-path: false
+          tools: tools_qtcreator_gui
+          version: ${{ steps.v.outputs.qt }}
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@073e34d7c2ab4ae6961ed7cca690b3abd5ba5a7e'
+
+      - name: Build Moonlight (x64)
+        shell: pwsh
+        env:
+          QT_BIN: ${{ runner.workspace }}\Qt\${{ steps.v.outputs.qt }}\msvc2022_64\bin
+          EXTRA: ${{ steps.pick.outputs.args }}
+        run: |
+          $extra = @()
+          if ($env:EXTRA) { $extra = $env:EXTRA -split ' ' | ForEach-Object { $_.Trim("'") } }
+          ./scripts/build-moonlight.ps1 -QtBin $env:QT_BIN -OutDir "$PWD\moonlight-out" @extra
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moonlight-portable
+          path: moonlight-out/*
+          if-no-files-found: error

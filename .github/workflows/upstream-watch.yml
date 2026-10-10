@@ -1,0 +1,54 @@
+name: Upstream watch
+
+# Once a week, checks whether Apollo or Moonlight have published a release newer than the one our forks are based on
+# (scripts/versions.env: *_UPSTREAM_BASE) and opens one issue per new release with the steps to pull it in
+# (scripts/sync-upstream.sh, docs/upstream-sync.md). Nothing is changed automatically.
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare upstream releases with our base
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -a; source scripts/versions.env; set +a
+          check() {   # name upstream_repo base_tag fork_repo
+            local name=$1 up=$2 base=$3 fork=$4
+            local latest; latest=$(gh api "repos/$up/releases/latest" --jq .tag_name)
+            echo "$name: upstream latest release $latest, our base $base"
+            [ "$latest" = "$base" ] && return 0
+            local title="Upstream $name $latest is available (we are based on $base)"
+            if [ -n "$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" --json number --jq '.[0].number')" ]; then
+              echo "  issue already open"; return 0
+            fi
+            local ahead; ahead=$(gh api "repos/$up/compare/$base...$latest" --jq '.ahead_by' 2>/dev/null || echo '?')
+            gh issue create --repo "$REPO" --title "$title" --label upstream --body "$(cat <<EOF
+          Upstream **$up** published **$latest** ($ahead commits after our base **$base**).
+
+          To pull it into our fork and test it:
+
+          1. \`./scripts/sync-upstream.sh $name $latest\` (needs \`gh\` logged in; rebases our commits onto the new release and pushes a candidate branch to \`$fork\`).
+          2. Run **Actions > Build from source** with the candidate branch (the script prints the exact command).
+          3. If it builds, run \`./tests/run-display-tests.sh\` on a machine, then update \`scripts/versions.env\` (the script prints the lines) and add a CHANGELOG entry.
+
+          See docs/upstream-sync.md. This issue was opened automatically by the upstream-watch workflow.
+          EOF
+          )" || gh issue create --repo "$REPO" --title "$title" --body "Upstream $up published $latest. See docs/upstream-sync.md and run scripts/sync-upstream.sh $name $latest."
+          }
+          gh label create upstream --repo "$REPO" --description "A new upstream release is available" --color 0e8a16 2>/dev/null || true
+          check apollo    "$APOLLO_UPSTREAM_REPO"    "$APOLLO_UPSTREAM_BASE"    "shohamh/Apollo"
+          check moonlight "$MOONLIGHT_UPSTREAM_REPO" "$MOONLIGHT_UPSTREAM_BASE" "shohamh/moonlight-qt"

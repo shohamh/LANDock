@@ -1,0 +1,38 @@
+# --- never commit: generated per machine, secrets, big binaries -----------------------------------------------
+# built binaries (from a release or scripts/build-host.sh)
+host/bin/
+# build work area and test runs (may contain screenshots of the desktop)
+build/
+# release files
+dist/
+tests/.work/
+app/**/bin/
+app/**/obj/
+*.user
+.vs/
+
+# --- local development leftovers ---------------------------------------------------------------------------
+# the experiments this project grew out of: logs, state, screenshots, one-off scripts
+lab/
+# a local Apollo checkout used while developing
+vendor/
+# downloaded Moonlight copies and build inputs
+deps/
+# old experiment folder (see lab/)
+docs/multi3/
+tools/*.exe
+
+# --- noise ---------------------------------------------------------------------------------------------------
+__pycache__/
+*.pyc
+*.log
+*.zip
+*.tmp
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# keep the licence and docs images
+!docs/images/*.png
+!docs/images/*.svg

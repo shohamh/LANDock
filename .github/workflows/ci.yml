@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    name: App tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build and test
+        run: dotnet test app/LANDock.Tests -c Release
+
+  scripts:
+    name: Scripts and packaging
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PowerShell scripts parse
+        shell: pwsh
+        run: |
+          $bad = 0
+          Get-ChildItem -Recurse -Filter *.ps1 | Where-Object { $_.FullName -notmatch '\\(build|dist|lab|obj|bin)\\' } | ForEach-Object {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
+            if ($errors) { $bad++; $errors | Select-Object -First 3 | ForEach-Object { "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" } }
+            else { "ok  $($_.FullName)" }
+          }
+          if ($bad) { throw "$bad script(s) do not parse" }
+
+      - name: Shell scripts parse
+        shell: bash
+        run: |
+          for f in $(git ls-files '*.sh'); do bash -n "$f" && echo "ok  $f"; done
+
+      - name: Release notes can be extracted
+        shell: bash
+        run: ./scripts/release-notes.sh "$(cat VERSION | tr -d '[:space:]')" | head -5
+
+  installer:
+    name: Installer builds (with a stand-in host)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Publish the app
+        run: dotnet publish app/LANDock/LANDock.csproj -c Release -p:Version=0.0.0-ci -o app-out
+      - name: Stand-in host binaries (the real ones are built by the release workflow)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force host/bin/assets | Out-Null
+          foreach ($f in 'sunshine.exe', 'vddtool.exe') { Set-Content "host/bin/$f" 'stand-in' }
+          Set-Content host/bin/assets/stand-in.txt 'stand-in'
+      - name: Package the parts (official Moonlight release, checksum verified) and build the installer
+        shell: pwsh
+        run: |
+          ./scripts/package-components.ps1 -Version 0.0.0-ci -AppExe app-out/LANDock.exe
+          ./scripts/build-installer.ps1 -Version 0.0.0-ci
+      - name: The installer installs silently, per user, and the files are where the app expects them
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'landock-install'
+          $p = Start-Process dist/LANDock-Setup-0.0.0-ci.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir", '/TASKS=""' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer exit code $($p.ExitCode)" }
+          foreach ($f in 'LANDock.exe', 'host\bin\sunshine.exe', 'host\VERSION.txt', 'client\moonlight\Moonlight.exe', 'client\VERSION.txt') {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "missing after install: $f" }
+          }
+          Get-Content (Join-Path $dir 'host\VERSION.txt'), (Join-Path $dir 'client\VERSION.txt')

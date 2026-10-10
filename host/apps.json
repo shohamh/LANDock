@@ -1,0 +1,11 @@
+{
+    "apps": [
+        {
+            "name": "VD",
+            "uuid": "5A1E0C11-0000-4000-8000-00000000A001",
+            "virtual-display": true
+        }
+    ],
+    "env": {},
+    "version": 2
+}

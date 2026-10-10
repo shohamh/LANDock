@@ -1,0 +1,20 @@
+diff --git a/src/input.cpp b/src/input.cpp
+index 6c03d0d..8bf684f 100644
+--- a/src/input.cpp
++++ b/src/input.cpp
+@@ -462,6 +462,7 @@ namespace input {
+     auto &touch_port = input->touch_port;
+     if (touch_port_event->peek()) {
+       touch_port = *touch_port_event->pop();
++      BOOST_LOG(info) << "LANDOCK touch_port: offset="sv << touch_port.offset_x << ',' << touch_port.offset_y << " size="sv << touch_port.width << 'x' << touch_port.height << " env="sv << touch_port.env_width << 'x' << touch_port.env_height << " client_off="sv << touch_port.client_offsetX << ',' << touch_port.client_offsetY << " scalar_inv="sv << touch_port.scalar_inv;
+     }
+     if (!touch_port) {
+       BOOST_LOG(verbose) << "Ignoring early absolute input without a touch port"sv;
+@@ -552,6 +553,7 @@ namespace input {
+       touch_port.env_height
+     };
+ 
++    BOOST_LOG(info) << "LANDOCK abs_mouse: raw="sv << x << ',' << y << " ref="sv << width << 'x' << height << " -> display px="sv << tpcoords->first << ',' << tpcoords->second;
+     platf::abs_mouse(platf_input, abs_port, tpcoords->first, tpcoords->second);
+   }
+ 

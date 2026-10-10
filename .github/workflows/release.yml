@@ -1,0 +1,117 @@
+name: Release
+
+# Pushing a tag like v0.2.0 (use scripts/release.sh) builds the app, Apollo and Moonlight (build.yml), packages the three
+# update parts, builds the Windows installer with Inno Setup, and publishes a GitHub release with:
+#   LANDock-Setup-<v>.exe             the installer (per-user, no administrator rights)
+#   LANDock-{app,host,client}-<v>.zip the parts the in-app updater downloads (only the ones that changed)
+#   manifest.json                     versions + SHA256 of the parts (what the in-app updater reads)
+#   SHA256SUMS.txt
+# Run it by hand (Actions > Release > Run workflow) for a dry run: everything is built and packaged and the files are
+# uploaded as a workflow artifact, but nothing is published.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version label for a dry run (nothing is published)'
+        required: false
+        default: '0.0.0-dryrun'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build from source
+    uses: ./.github/workflows/build.yml
+
+  package:
+    name: Package, build the installer, publish
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-exe
+          path: app-in
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: host-bin
+          path: host/bin
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: moonlight-portable
+          path: moonlight-in
+
+      - name: Work out the version
+        id: ver
+        shell: bash
+        env:
+          REF: ${{ github.ref }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [[ "$REF" == refs/tags/v* ]]; then
+            V="${REF#refs/tags/v}"
+            if [ "$V" != "$(cat VERSION | tr -d '[:space:]')" ]; then
+              echo "tag v$V does not match the VERSION file ($(cat VERSION)); use scripts/release.sh" >&2; exit 1
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            V="${INPUT_VERSION:-0.0.0-dryrun}"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Release notes
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          ./scripts/release-notes.sh "$VERSION" > notes.md || true
+          [ -s notes.md ] || echo "LANDock v$VERSION" > notes.md
+
+      - name: Package the update parts
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $zip = Get-ChildItem moonlight-in -Filter 'MoonlightPortable-x64-*.zip' | Select-Object -First 1
+          if (-not $zip) { throw 'the build produced no Moonlight zip' }
+          ./scripts/package-components.ps1 -Version $env:VERSION -AppExe app-in/LANDock.exe -MoonlightZip $zip.FullName -NotesFile notes.md
+
+      - name: Build the installer (Inno Setup)
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: ./scripts/build-installer.ps1 -Version $env:VERSION
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Push-Location dist
+          Get-ChildItem LANDock-Setup-*.exe, LANDock-*.zip, manifest.json | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
+          Pop-Location
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish the GitHub release
+        if: steps.ver.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          PRE=""
+          [[ "$VERSION" == *-* ]] && PRE="--prerelease"
+          gh release create "v$VERSION" dist/* --title "LANDock v$VERSION" --notes-file notes.md $PRE
