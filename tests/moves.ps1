@@ -178,8 +178,16 @@ function KeyOf($x, $y) {
   if ($n -eq $M1) { 'M1' } elseif ($n -eq $M2) { 'M2' } elseif ($n -eq $TV) { 'TV' } else { 'LAP' }
 }
 function WinKey($h) { $r = New-Object S+RECT; [void][S]::GetWindowRect($h, [ref]$r); KeyOf (($r.L + $r.R) / 2) (($r.T + $r.B) / 2) }
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class Z {
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  // raise to the top of the z-order without activating it (SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+  public static void Raise(IntPtr h) { SetWindowPos(h, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); } }
+'@
 function MlFrame($name) {
   $h = $mlh[$name]
+  [Z]::Raise($h)   # a window covered by another one would be captured as that other window: bring it to the front first
   $cl = New-Object S+RECT; [void][S]::GetClientRect($h, [ref]$cl)
   $o = New-Object S+PT; [void][S]::ClientToScreen($h, [ref]$o)
   $bmp = New-Object System.Drawing.Bitmap $cl.R, $cl.B
