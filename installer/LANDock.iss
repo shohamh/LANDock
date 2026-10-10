@@ -10,6 +10,9 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+#ifndef NumericVersion
+  #define NumericVersion "0.0.0"
+#endif
 #ifndef StageDir
   #define StageDir "..\build\stage"
 #endif
@@ -29,7 +32,7 @@ AppPublisher=LANDock contributors
 AppPublisherURL=https://github.com/shohamh/LANDock
 AppSupportURL=https://github.com/shohamh/LANDock/issues
 AppUpdatesURL=https://github.com/shohamh/LANDock/releases
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#NumericVersion}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes

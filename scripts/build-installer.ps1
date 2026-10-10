@@ -33,7 +33,8 @@ if (-not $iscc) { throw 'Inno Setup (ISCC.exe) not found. Install it from https:
 Write-Host "using $iscc"
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-& $iscc "/DAppVersion=$Version" "/DStageDir=$Stage" "/DRepoRoot=$root" "/O$OutDir" (Join-Path $root 'installer\LANDock.iss')
+$numeric = if ($Version -match '^(\d+\.\d+\.\d+)') { $Matches[1] } else { '0.0.0' }   # file version info must be numeric; 1.2.3-rc1 -> 1.2.3
+& $iscc "/DAppVersion=$Version" "/DNumericVersion=$numeric" "/DStageDir=$Stage" "/DRepoRoot=$root" "/O$OutDir" (Join-Path $root 'installer\LANDock.iss')
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
 $setup = Join-Path $OutDir "LANDock-Setup-$Version.exe"
 if (-not (Test-Path $setup)) { throw "expected $setup was not produced" }
