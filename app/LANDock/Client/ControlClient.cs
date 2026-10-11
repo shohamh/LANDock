@@ -71,7 +71,7 @@ public sealed class ControlClient : IDisposable
             if (_pinned != null && SeenFingerprint != null && !string.Equals(SeenFingerprint, _pinned, StringComparison.OrdinalIgnoreCase))
                 throw new ControlException($"the certificate of {_where} changed (it shows {SeenFingerprint}, this PC paired with {_pinned}). Not connecting. " +
                                            "If the laptop was reinstalled, remove the host here and pair it again.");
-            throw new ControlException($"could not reach the host at {_where} (is the host running on the laptop, and is its firewall open for private networks?)");
+            throw new ControlException($"could not reach the host at {_where} (is the host running on the laptop, and is its firewall open for private networks?) [{ex.GetType().Name}: {ex.Message}]");
         }
         using (resp)
         {

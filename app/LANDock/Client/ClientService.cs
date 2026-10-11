@@ -560,11 +560,8 @@ public sealed class ClientService
                     var moved = now.Where(m => last.Any(o => o.Name.Equals(m.Name, StringComparison.OrdinalIgnoreCase) && o.Bounds.Location != m.Bounds.Location)).ToList();
                     last = now;
                     Log.Info($"{h.Name}: screens changed: " + Describe(added, "added") + Describe(removed, "removed") + Describe(changed, "resized") + Describe(moved, "moved"));
-                    // a move alone changes no display, and it is not reported: the laptop's layout moves its displays, which moves
-                    // screens on a PC that runs the laptop too, so reporting every move would never settle. The next report (a screen
-                    // added, removed or resized) carries the positions then.
-                    if (added.Count > 0 || removed.Count > 0 || changed.Count > 0)
-                        await ApplyScreenChangesAsync(h, now, added, removed, changed, missing, ct);
+                    // a move changes no display, but the laptop lays its displays out by the desktop's arrangement: every change is reported
+                    await ApplyScreenChangesAsync(h, now, added, removed, changed, missing, ct);
                 }
                 await ExpireMissingAsync(h, now, missing, ct);
             }
