@@ -112,7 +112,7 @@ public class E2ETests
             throw new InvalidOperationException($"the button '{name}' stayed disabled");
         // Pair… opens a dialog from its handler: an Invoke call would stay open for as long as the dialog is up, and every other
         // UI Automation call to the window would time out. The keyboard presses the focused button instead (Space).
-        if (name == "Pair…")
+        if (name is "Pair…" or "Rename…")
         {
             ClickButtonWindow(w, name);
             return;
@@ -138,7 +138,7 @@ public class E2ETests
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc callback, IntPtr lParam);
 
-    private const uint BM_CLICK = 0x00F5, WM_CHAR = 0x0102;
+    private const uint BM_CLICK = 0x00F5, WM_CHAR = 0x0102, WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101;
 
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     private struct NativeRect { public int Left, Top, Right, Bottom; }
@@ -290,9 +290,10 @@ public class E2ETests
     /// saves it. The items of an open list are not reachable through UI Automation in this window, so the keys are used.</summary>
     private static void MoveCombo(Window w, AutomationElement combo, bool down = true)
     {
-        w.SetForeground();
-        combo.Focus();
-        Keyboard.Type(down ? VirtualKeyShort.DOWN : VirtualKeyShort.UP);
+        // the arrow key goes to the combo box's own window (keyboard focus is not reliable from a test process)
+        var hwnd = combo.Properties.NativeWindowHandle.ValueOrDefault;
+        PostMessage(hwnd, WM_KEYDOWN, (IntPtr)(down ? 0x28 : 0x26), IntPtr.Zero);
+        PostMessage(hwnd, WM_KEYUP, (IntPtr)(down ? 0x28 : 0x26), IntPtr.Zero);
     }
 
     private static void Ok(Window dialog) => dialog.FindFirstDescendant(cf => cf.ByName("OK"))?.AsButton().Invoke();
@@ -574,17 +575,16 @@ public class E2ETests
 
             // ---- nickname and favorite ---------------------------------------------------------------------------------
             Step("desktop: give the laptop a nickname and make it a favorite");
-            dw.FindAllDescendants(cf => cf.ByControlType(ControlType.ListItem))[0].Click();
+            SelectRowFor(dw, "1", "Rename…");   // the laptop's row (its name is the row number); selected through its pattern, as the other steps do
             Press(dw, "Rename…");
-            var nick = Popup(desktop, a, w => SafeTitle(w) == "Nickname", 20);
+            var nick = Dialog(desktop, a, "Nickname", 20);
             if (nick == null)
             {
                 _out.WriteLine("windows of the desktop: " + string.Join(" | ", WindowsOf(desktop, a).Select(SafeTitle)));
                 Snap("no-nickname-dialog");
             }
             Assert.NotNull(nick);
-            var nickBox = nick!.FindFirstDescendant(cf => cf.ByControlType(ControlType.Edit)).AsTextBox();
-            nickBox.Enter("Office PC");
+            TypeIntoLowestEdit("Nickname", "Office PC");   // typed into the box window, as the PIN is
             Ok(nick);
             Press(dw, "★ Favorite");
             Retry.WhileFalse(() => Settings(DesktopData)["Client"]!["Hosts"]!.AsArray()[0]!["Favorite"]?.GetValue<bool>() == true, TimeSpan.FromSeconds(10));
@@ -609,7 +609,7 @@ public class E2ETests
             Tab(dw, "Client (desktop PC)");
             Assert.True(Retry.WhileFalse(() => dw.FindAllDescendants(cf => cf.ByControlType(ControlType.ListItem)).Length == 2, TimeSpan.FromSeconds(30)).Result);
             var rowsNow = dw.FindAllDescendants(cf => cf.ByControlType(ControlType.ListItem));
-            rowsNow[1].Click();
+            SelectRowFor(dw, "2", "Move up");   // the second row (the first is the laptop)
             Press(dw, "Move up");
             var order = Retry.WhileNull(() =>
             {
