@@ -489,6 +489,35 @@ public sealed class HostService : IDisposable
     /// <summary>The desktop screen a display shows, as the desktop reported it in the last handshake (null when unknown).</summary>
     private string? ScreenShownBy(string label) => _displayScreen.TryGetValue(label, out var id) ? id : null;
 
+    /// <summary>instance key -> the monitor id of the virtual display it shows, recorded when that display is first seen.</summary>
+    private readonly Dictionary<string, string> _displayIds = new();
+
+    /// <summary>The display each instance is showing now (null when none). Apollo's log names a display when it is created, and Windows
+    /// renames displays when others go (it reuses the names), so a display is recognised by its monitor id, which stays with it.</summary>
+    private Dictionary<string, string?> CurrentDisplays(IReadOnlyDictionary<string, ScreenInfo> screens)
+    {
+        var byId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in screens.Keys)
+        {
+            var id = LANDock.Client.ClientService.MonitorIdOf(@"\\.\" + name);
+            if (id != "") byId[id] = name;
+        }
+        var res = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var inst in Launched())
+        {
+            var logged = ActiveDisplayOf(inst);   // the display Apollo logged for the stream now running, or null once it has ended
+            if (logged == null) { _displayIds.Remove(inst.Key); res[inst.Key] = null; continue; }
+            if (!_displayIds.ContainsKey(inst.Key))
+            {
+                var id = LANDock.Client.ClientService.MonitorIdOf(@"\\.\" + logged);
+                if (id == "") { res[inst.Key] = logged; continue; }   // not readable yet: the name as logged
+                _displayIds[inst.Key] = id;
+            }
+            res[inst.Key] = byId.TryGetValue(_displayIds[inst.Key], out var current) ? current : null;
+        }
+        return res;
+    }
+
     private async Task WatchLayout(CancellationToken ct)
     {
         var last = "";
@@ -497,11 +526,12 @@ public sealed class HostService : IDisposable
             try
             {
                 var screens = VddTool.Screens();
+                var names = CurrentDisplays(screens);
                 var report = _latestScreens;
                 var todo = report is { Count: > 0 }
                     // the desktop's screens: each display goes where the screen it shows is, in the desktop's arrangement
-                    ? HostPlanning.PlanMirrorLayout(screens, Launched().Select(i => (ActiveDisplayOf(i), ScreenShownBy(i.Label))), report)
-                    : HostPlanning.PlanLayout(screens, Launched().Select(ActiveDisplayOf));
+                    ? HostPlanning.PlanMirrorLayout(screens, Launched().Select(i => (names[i.Key], ScreenShownBy(i.Label))), report)
+                    : HostPlanning.PlanLayout(screens, Launched().Select(i => names[i.Key]));
                 if (todo.Count > 0)
                 {
                     var msg = $"layout {string.Join(' ', todo)} -> {VddTool.Layout(todo).Split('\n').LastOrDefault()?.Trim()}";

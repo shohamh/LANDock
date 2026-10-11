@@ -5,7 +5,12 @@ using LANDock.Core;
 
 namespace LANDock.Client;
 
-public sealed record MonitorInfo(int Index, string Name, Rectangle Bounds, bool Primary);
+/// <summary>A screen of this PC. Name is the Windows display name (such as DISPLAY1), which Windows reuses; DeviceId is the monitor's own device id, which
+/// stays with the monitor (empty when it cannot be read). Key is the identity used everywhere: the device id, else the name.</summary>
+public sealed record MonitorInfo(int Index, string Name, Rectangle Bounds, bool Primary, string DeviceId = "")
+{
+    public string Key => DeviceId == "" ? Name : DeviceId;
+}
 public sealed record StreamStatus(string Name, bool Running, int Pid, Rectangle Window, int Monitor);
 
 /// <summary>
@@ -27,7 +32,7 @@ public sealed class ClientService
     {
         var i = 0;
         return Screen.AllScreens.OrderBy(s => s.Bounds.X).ThenBy(s => s.Bounds.Y)
-            .Select(s => new MonitorInfo(++i, s.DeviceName, s.Bounds, s.Primary)).ToList();
+            .Select(s => new MonitorInfo(++i, s.DeviceName, s.Bounds, s.Primary, MonitorIdOf(s.DeviceName))).ToList();
     }
 
     /// <summary>What the handshake asks for each display: the size of the monitor it is shown on, its frame rate, and the screen.</summary>
@@ -38,36 +43,73 @@ public sealed class ClientService
             var m = ScreenOf(s, mons);
             // a display whose screen is not connected is offered at the primary screen's size, without a screen
             if (m == null) { var p = mons.First(); return new DisplayOffer(s.Name, p.Bounds.Width, p.Bounds.Height, s.Fps, null); }
-            return new DisplayOffer(s.Name, m.Bounds.Width, m.Bounds.Height, s.Fps, m.Name);
+            return new DisplayOffer(s.Name, m.Bounds.Width, m.Bounds.Height, s.Fps, m.Key);
         }).ToList();
     }
 
     /// <summary>The screen a display is shown on. A display that has a screen id is shown on that screen, or on none while it is not
-    /// connected (it is not moved to another screen). A display without an id (settings of older versions) uses its number.</summary>
+    /// connected (it is not moved to another screen). A display without an id (settings of older versions) uses its number.
+    /// The id is the monitor's device id; a name saved by an older version is still accepted.</summary>
     public static MonitorInfo? ScreenOf(StreamSettings s, IReadOnlyList<MonitorInfo> mons) =>
         string.IsNullOrEmpty(s.ScreenId)
             ? mons.FirstOrDefault(m => m.Index == s.Monitor)
-            : mons.FirstOrDefault(m => m.Name.Equals(s.ScreenId, StringComparison.OrdinalIgnoreCase));
+            : mons.FirstOrDefault(m => m.Key.Equals(s.ScreenId, StringComparison.OrdinalIgnoreCase) || m.Name.Equals(s.ScreenId, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Shows a display on the screen with this number (as the Client tab lists them), keeping its id in step.</summary>
     public static void AssignMonitor(StreamSettings s, int index)
     {
         s.Monitor = index;
-        s.ScreenId = Monitors().FirstOrDefault(m => m.Index == index)?.Name ?? "";
+        s.ScreenId = Monitors().FirstOrDefault(m => m.Index == index)?.Key ?? "";
     }
 
     /// <summary>The screens the enabled displays are shown on and that are connected now.</summary>
     public static List<MonitorInfo> ScreensInUse(HostProfile h, IReadOnlyList<MonitorInfo> mons) =>
         h.Streams.Where(s => s.Enabled).Select(s => ScreenOf(s, mons)).Where(m => m != null).Select(m => m!)
-            .DistinctBy(m => m.Name).ToList();
+            .DistinctBy(m => m.Key).ToList();
 
     /// <summary>The screens that the given monitors are, as the handshake reports them (plan-monitor-layout.md, step 1).</summary>
     public static List<LANDock.Host.MonitorOffer> ScreenReport(IEnumerable<MonitorInfo> screens) =>
-        screens.Select(m => new LANDock.Host.MonitorOffer(m.Name, m.Bounds.X, m.Bounds.Y, m.Bounds.Width, m.Bounds.Height,
+        screens.Select(m => new LANDock.Host.MonitorOffer(m.Key, m.Bounds.X, m.Bounds.Y, m.Bounds.Width, m.Bounds.Height,
             ScreenRotation(m.Name), m.Primary)).ToList();
 
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     private static extern bool EnumDisplaySettingsW(string deviceName, int modeNum, byte[] devMode);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Ansi)]
+    private struct DisplayDevice
+    {
+        public int cb;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceString;
+        public int StateFlags;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceID;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Ansi)]
+    private static extern bool EnumDisplayDevices(string? device, uint index, ref DisplayDevice displayDevice, uint flags);
+
+    /// <summary>The device id of the monitor shown on a display (MONITOR\LEN9059\...). It stays with the monitor when Windows renames the
+    /// display; empty when it cannot be read.</summary>
+    public static string MonitorIdOf(string displayName)
+    {
+        // while Windows rearranges the displays the lookup can fail for a moment: it is tried again, and when it still fails the id
+        // seen before for this display is kept (a monitor must not change its key for a moment)
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var dd = new DisplayDevice { cb = System.Runtime.InteropServices.Marshal.SizeOf<DisplayDevice>() };
+            if (EnumDisplayDevices(displayName, 0, ref dd, 0) && !string.IsNullOrEmpty(dd.DeviceID))
+            {
+                lock (_monitorIds) _monitorIds[displayName] = dd.DeviceID;
+                return dd.DeviceID;
+            }
+            System.Threading.Thread.Sleep(100);
+        }
+        Log.Info($"monitor id of {displayName} could not be read; using the id seen before");
+        lock (_monitorIds) return _monitorIds.TryGetValue(displayName, out var known) ? known : "";
+    }
+
+    private static readonly Dictionary<string, string> _monitorIds = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The orientation of a display in degrees (0, 90, 180 or 270), from the DEVMODE that Windows keeps for it. In DEVMODEW the
     /// field dmDisplayOrientation is at byte 84: after the 32-character device name (64 bytes), the version, size and extra bytes (8),
@@ -520,17 +562,17 @@ public sealed class ClientService
 
     /// <summary>The screens of this PC as one comparable text: a change of name, position, size or rotation changes it.</summary>
     public static string LayoutOf(IEnumerable<MonitorInfo> mons) =>
-        string.Join("|", mons.Select(m => $"{m.Name}@{m.Bounds.X},{m.Bounds.Y},{m.Bounds.Width}x{m.Bounds.Height}r{ScreenRotation(m.Name)}"));
+        string.Join("|", mons.Select(m => $"{m.Key}@{m.Bounds.X},{m.Bounds.Y},{m.Bounds.Width}x{m.Bounds.Height}r{ScreenRotation(m.Name)}"));
 
     /// <summary>What changed between two lists of screens: the screens added, the ones removed, and those whose size or position changed.</summary>
     public static (List<MonitorInfo> added, List<MonitorInfo> removed, List<MonitorInfo> changed) ScreenChanges(IReadOnlyList<MonitorInfo> before, IReadOnlyList<MonitorInfo> now)
     {
-        var old = before.ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
-        var cur = now.ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
-        var added = now.Where(m => !old.ContainsKey(m.Name)).ToList();
-        var removed = before.Where(m => !cur.ContainsKey(m.Name)).ToList();
+        var old = before.ToDictionary(m => m.Key, StringComparer.OrdinalIgnoreCase);
+        var cur = now.ToDictionary(m => m.Key, StringComparer.OrdinalIgnoreCase);
+        var added = now.Where(m => !old.ContainsKey(m.Key)).ToList();
+        var removed = before.Where(m => !cur.ContainsKey(m.Key)).ToList();
         // a size change restarts the display (its stream has the new size); a move only changes the layout the laptop uses
-        var changed = now.Where(m => old.TryGetValue(m.Name, out var o) && (o.Bounds.Width != m.Bounds.Width || o.Bounds.Height != m.Bounds.Height)).ToList();
+        var changed = now.Where(m => old.TryGetValue(m.Key, out var o) && (o.Bounds.Width != m.Bounds.Width || o.Bounds.Height != m.Bounds.Height)).ToList();
         return (added, removed, changed);
     }
 
@@ -557,7 +599,7 @@ public sealed class ClientService
                 {
                     lastLayout = layout;
                     var (added, removed, changed) = ScreenChanges(last, now);
-                    var moved = now.Where(m => last.Any(o => o.Name.Equals(m.Name, StringComparison.OrdinalIgnoreCase) && o.Bounds.Location != m.Bounds.Location)).ToList();
+                    var moved = now.Where(m => last.Any(o => o.Key.Equals(m.Key, StringComparison.OrdinalIgnoreCase) && o.Bounds.Location != m.Bounds.Location)).ToList();
                     last = now;
                     Log.Info($"{h.Name}: screens changed: " + Describe(added, "added") + Describe(removed, "removed") + Describe(changed, "resized") + Describe(moved, "moved"));
                     // a move changes no display, but the laptop lays its displays out by the desktop's arrangement: every change is reported
@@ -573,7 +615,7 @@ public sealed class ClientService
 
     private static string Describe(IEnumerable<MonitorInfo> screens, string what)
     {
-        var list = screens.Select(m => $"{m.Name} {m.Bounds.Width}x{m.Bounds.Height}").ToList();
+        var list = screens.Select(m => $"{m.Name} {m.Bounds.Width}x{m.Bounds.Height} [{m.Key}]").ToList();
         return list.Count == 0 ? "" : $"{what} {string.Join(", ", list)}; ";
     }
 
@@ -582,17 +624,17 @@ public sealed class ClientService
     {
         // a screen that is gone: its display waits for the grace period
         foreach (var m in removed)
-            foreach (var s in h.Streams.Where(x => x.Enabled && x.ScreenId.Equals(m.Name, StringComparison.OrdinalIgnoreCase)))
+            foreach (var s in h.Streams.Where(x => x.Enabled && x.ScreenId.Equals(m.Key, StringComparison.OrdinalIgnoreCase)))
                 missing.TryAdd(s.Name, DateTime.Now);
         // a screen that is connected again: its display is no longer waiting
         foreach (var m in now)
-            foreach (var s in h.Streams.Where(x => x.ScreenId.Equals(m.Name, StringComparison.OrdinalIgnoreCase)))
+            foreach (var s in h.Streams.Where(x => x.ScreenId.Equals(m.Key, StringComparison.OrdinalIgnoreCase)))
                 missing.Remove(s.Name);
         // a new screen (or one that came back): its display is started; a new screen gets the first free display
         foreach (var m in added) await ShowScreenAsync(h, m, now, missing);
         // a screen whose size or position changed: its display is started again with the size it now needs
         foreach (var m in changed)
-            foreach (var s in h.Streams.Where(x => x.Enabled && x.ScreenId.Equals(m.Name, StringComparison.OrdinalIgnoreCase)).ToList())
+            foreach (var s in h.Streams.Where(x => x.Enabled && x.ScreenId.Equals(m.Key, StringComparison.OrdinalIgnoreCase)).ToList())
             {
                 try { await StopAsync(h, s.Name); await StartAsync(h, s.Name); }
                 catch (Exception ex) { Log.Error($"{h.Name} {s.Name}: restarting for the new screen", ex); }
@@ -602,14 +644,14 @@ public sealed class ClientService
 
     private async Task ShowScreenAsync(HostProfile h, MonitorInfo m, IReadOnlyList<MonitorInfo> now, Dictionary<string, DateTime> missing)
     {
-        var display = h.Streams.FirstOrDefault(x => x.ScreenId.Equals(m.Name, StringComparison.OrdinalIgnoreCase))
+        var display = h.Streams.FirstOrDefault(x => x.ScreenId.Equals(m.Key, StringComparison.OrdinalIgnoreCase))
                       ?? FreeStream(h, now, missing);
         if (display == null)
         {
             Log.Info($"{h.Name}: {m.Name} is new, but all {h.Streams.Count} displays of the laptop are in use");
             return;
         }
-        display.ScreenId = m.Name;
+        display.ScreenId = m.Key;
         display.Monitor = m.Index;
         display.Enabled = true;
         _settings.Save();

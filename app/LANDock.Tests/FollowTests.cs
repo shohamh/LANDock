@@ -31,6 +31,18 @@ public class FollowTests
     }
 
     [Fact]
+    public void A_display_stays_with_its_monitor_when_Windows_renames_the_display()
+    {
+        // the monitor is the same, but Windows now calls its display DISPLAY9 (it was DISPLAY6): the device id still finds it
+        var renamed = new MonitorInfo(3, "\\\\.\\DISPLAY9", new Rectangle(3840, 0, 1920, 1080), false, "MONITOR\\SMKD1CE\\0010");
+        var s = Stream("M2", "MONITOR\\SMKD1CE\\0010");
+        Assert.Same(renamed, ClientService.ScreenOf(s, new List<MonitorInfo> { renamed }));
+        // and a different monitor that Windows gives the old name is not taken for it
+        var other = new MonitorInfo(3, "\\\\.\\DISPLAY6", new Rectangle(3840, 0, 1920, 1080), false, "MONITOR\\SMKD1CE\\0005");
+        Assert.Null(ClientService.ScreenOf(s, new List<MonitorInfo> { other }));
+    }
+
+    [Fact]
     public void A_display_from_older_settings_without_an_id_uses_its_number()
     {
         var now = new List<MonitorInfo> { Mon(1, "\\\\.\\DISPLAY1", 0, 1920, 1080, primary: true), Mon(2, "\\\\.\\DISPLAY2", 1920, 1920, 1080) };
