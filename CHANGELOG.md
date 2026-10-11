@@ -4,6 +4,15 @@ All notable changes to LANDock. The format follows [Keep a Changelog](https://ke
 project uses [Semantic Versioning](https://semver.org/). Releases are cut with `scripts/release.sh`; the section for
 a version becomes the text of its GitHub release.
 
+## [Unreleased]
+
+### Changed
+- **One Moonlight for all displays on the desktop PC.** Every display used to have its own copy of Moonlight, and Windows
+  asked about each copy's firewall access (up to six questions, again after every test run). Now all displays share one
+  copy in `%LOCALAPPDATA%\LANDock\moonlight`, and each display keeps its own pairing and settings in it.
+- **The firewall rules are made at install time.** The installer's firewall option allows the host (Apollo and LANDock) on
+  the laptop and Moonlight on the desktop PC, with one administrator prompt. Uninstalling removes them.
+
 ## [0.3.0] - 2026-10-11
 
 Experimental: the monitor layout was built and tested on one PC with virtual screens only. A second physical monitor, a

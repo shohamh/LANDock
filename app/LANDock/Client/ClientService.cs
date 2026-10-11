@@ -135,10 +135,14 @@ public sealed class ClientService
     /// Windows asks the firewall question once per program path, so the Moonlight copies must not move with each pairing.</summary>
     public static string StreamKey(HostProfile h) => string.IsNullOrWhiteSpace(h.HostId) ? h.Id : h.HostId;
 
-    public static string StreamFolder(HostProfile h, StreamSettings s) => Path.Combine(Paths.StreamsDir, StreamKey(h), s.Name);
+    /// <summary>The Moonlight copy every display uses (one for all of them: one firewall answer, see <see cref="Paths.MoonlightCopy"/>).</summary>
+    public static string StreamFolder(HostProfile h, StreamSettings s) => Paths.MoonlightCopy;
     private static string MoonlightExe(HostProfile h, StreamSettings s) => Path.Combine(StreamFolder(h, s), "Moonlight.exe");
     private static string HostAddr(HostProfile h, StreamSettings s) => $"{h.Address}:{s.Port}";
-    private static string LogFile(HostProfile h, StreamSettings s) => Path.Combine(StreamFolder(h, s), $"stream-{s.Name}.log");
+    /// <summary>The log of a display's stream (the output of its Moonlight), per laptop and display.</summary>
+    private static string LogFile(HostProfile h, StreamSettings s) => Path.Combine(Paths.RunsDir, $"{StreamKey(h)}-{s.Name}.log");
+    /// <summary>The ids of the Moonlight process running a display and of the command that started it, while it runs.</summary>
+    private static string PidFile(HostProfile h, StreamSettings s) => Path.Combine(Paths.RunsDir, $"{StreamKey(h)}-{s.Name}.pid");
 
     private static void RequireMoonlight()
     {
@@ -204,15 +208,57 @@ public sealed class ClientService
     private async Task<bool> CanListAsync(HostProfile h, StreamSettings s) =>
         Regex.IsMatch(await RunMoonlightAsync(h, s, new[] { "list", HostAddr(h, s) }, 25), @"(?m)^VD\b");
 
+    /// <summary>The Moonlight process running this display, from its pid file (the copy is shared by all displays, so the folder
+    /// cannot tell them apart). Empty once it has ended.</summary>
     private static List<Process> StreamProcesses(HostProfile h, StreamSettings s)
     {
-        var dir = StreamFolder(h, s).TrimEnd('\\') + "\\";
         var res = new List<Process>();
-        foreach (var p in Process.GetProcessesByName("Moonlight"))
+        try
         {
-            try { if (p.MainModule?.FileName?.StartsWith(dir, StringComparison.OrdinalIgnoreCase) == true) { res.Add(p); continue; } } catch { }
-            p.Dispose();
+            var ids = File.ReadAllText(PidFile(h, s)).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (ids.Length == 0 || !int.TryParse(ids[0], out var pid)) return res;
+            var p = Process.GetProcessById(pid);
+            if (p.ProcessName.Equals("Moonlight", StringComparison.OrdinalIgnoreCase)) res.Add(p);
+            else p.Dispose();
         }
+        catch { }
+        return res;
+    }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private struct ProcessEntry
+    {
+        public uint dwSize, cntUsage, th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID, cntThreads, th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile;
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern bool Process32FirstW(IntPtr snapshot, ref ProcessEntry entry);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern bool Process32NextW(IntPtr snapshot, ref ProcessEntry entry);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    /// <summary>The processes with this name that a process started (the Moonlight that a command interpreter runs).</summary>
+    private static List<int> ChildrenNamed(int parent, string exeName)
+    {
+        var res = new List<int>();
+        var snapshot = CreateToolhelp32Snapshot(0x2 /* TH32CS_SNAPPROCESS */, 0);
+        if (snapshot == IntPtr.Zero || snapshot == new IntPtr(-1)) return res;
+        try
+        {
+            var entry = new ProcessEntry { dwSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<ProcessEntry>() };
+            for (var ok = Process32FirstW(snapshot, ref entry); ok; ok = Process32NextW(snapshot, ref entry))
+                if (entry.th32ParentProcessID == parent && entry.szExeFile.Equals(exeName, StringComparison.OrdinalIgnoreCase))
+                    res.Add((int)entry.th32ProcessID);
+        }
+        finally { CloseHandle(snapshot); }
         return res;
     }
 
@@ -443,8 +489,21 @@ public sealed class ClientService
                     RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
                     Arguments = $"/c \"\"{MoonlightExe(h, s)}\" {argText} > \"{LogFile(h, s)}\" 2>&1\"",
                 };
-                Process.Start(psi);
+                // the redirection to the log file fails (and Moonlight never starts) when the folder is missing
+                Directory.CreateDirectory(Paths.RunsDir);
+                var command = Process.Start(psi)!;
                 launched = true;
+                // the Moonlight that the command interpreter started is this display's stream: its id is kept for the display
+                for (var i = 0; i < 80 && !command.HasExited; i++)
+                {
+                    var moonlight = ChildrenNamed(command.Id, "Moonlight.exe").FirstOrDefault();
+                    if (moonlight != 0)
+                    {
+                        File.WriteAllText(PidFile(h, s), $"{moonlight} {command.Id}");
+                        break;
+                    }
+                    await Task.Delay(250);
+                }
                 for (var i = 0; i < 80 && hw == IntPtr.Zero; i++)
                 {
                     await Task.Delay(500);
@@ -489,6 +548,13 @@ public sealed class ClientService
             }
             catch (Exception ex) { Log.Error($"{h.Name} {s.Name}: quit", ex); }
             foreach (var p in StreamProcesses(h, s)) { try { p.Kill(true); } catch { } p.Dispose(); }
+            try
+            {
+                var ids = File.ReadAllText(PidFile(h, s)).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (ids.Length > 1 && int.TryParse(ids[1], out var cmd)) { try { Process.GetProcessById(cmd).Kill(true); } catch { } }
+                File.Delete(PidFile(h, s));
+            }
+            catch { }
             Log.Info($"{h.Name} {s.Name}: stopped (the laptop removes its virtual display)");
         }
     }
@@ -518,14 +584,10 @@ public sealed class ClientService
         Cfg.Hosts.Remove(h);
         if (Cfg.DefaultHostId == h.Id) Cfg.DefaultHostId = "";
         _settings.Save();
-        // the Moonlight copies stay (Windows remembers their firewall answer); only their pairing data goes
-        try
-        {
-            var folder = Path.Combine(Paths.StreamsDir, StreamKey(h));
-            if (Directory.Exists(folder))
-                foreach (var ini in Directory.GetFiles(folder, "Moonlight.ini", SearchOption.AllDirectories)) File.Delete(ini);
-        }
-        catch { }
+        // the Moonlight copy is shared with the other laptops and holds their pairings too, so it stays (Windows remembers its
+        // firewall answer); this laptop's pairing in it is left in place and is replaced when the laptop is paired again
+        foreach (var s in h.Streams)
+            try { File.Delete(PidFile(h, s)); } catch { }
         Log.Info($"{h.Name}: removed from this PC");
     }
 

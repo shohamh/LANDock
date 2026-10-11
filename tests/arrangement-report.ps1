@@ -40,9 +40,9 @@ $body = @{
 $agreed = Invoke-RestMethod -Uri "https://127.0.0.1:$ControlPort/api/session" -Method Post -Body $body -ContentType 'application/json' -Headers @{ Authorization = "Bearer $token" }
 $agreed | ForEach-Object { Write-Host ("agreed {0}: port {1} {2}x{3}" -f $_.name, $_.port, $_.width, $_.height) }
 
-$dir = Join-Path $DataDir "streams\$($h.HostId)"
+$dir = Join-Path $DataDir "moonlight"
 foreach ($a in $agreed) {
-  $folder = Join-Path $dir $a.name
+  $folder = $dir
   Start-Process -FilePath (Join-Path $folder 'Moonlight.exe') -WorkingDirectory $folder -WindowStyle Hidden -ArgumentList "stream 127.0.0.1:$($a.port) VD --display-mode windowed --absolute-mouse --resolution $($a.width)x$($a.height) --fps 60 --no-audio-on-host" | Out-Null
   Write-Host "started Moonlight for $($a.name)"
 }

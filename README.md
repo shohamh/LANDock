@@ -43,7 +43,7 @@ Run the installer on **both** PCs. It does not need administrator rights and ins
 
 | On the laptop (host) | On the desktop PC (client) |
 |---|---|
-| Choose *Laptop only* (or both). Tick the firewall option (Windows asks for permission once). | Choose *Desktop PC only* (or both). |
+| Choose *Laptop only* (or both). Tick the firewall option (Windows asks for permission once). | Choose *Desktop PC only* (or both). Tick the firewall option (Windows asks for permission once). |
 | Install the **virtual display driver once**: install [Apollo](https://github.com/ClassicOldSong/Apollo/releases) from its release (its installer adds the SudoVDA driver). LANDock does not install drivers. | Nothing else. |
 
 The installer and the programs are not code-signed yet, so Windows SmartScreen may show a warning the first time
@@ -51,13 +51,15 @@ The installer and the programs are not code-signed yet, so Windows SmartScreen m
 
 ### 3. Allow the connection through the firewall
 
-Windows Firewall asks about the programs LANDock uses. Answer **Allow** (on *private* networks, which is your home
-network):
+The installer's firewall option allows the programs LANDock uses on *private* networks (your home network), with one
+administrator prompt from Windows per PC:
 
-- On the laptop, the installer's firewall option creates the rule for LANDock and the host (Apollo). If you skipped it, use
-  the *Allow through Windows Firewall…* button on the Host tab.
-- On the desktop PC, the first time each display connects, Windows asks about *Moonlight Game Streaming Client*. A display
-  has its own copy of Moonlight, so expect one question per display (up to six), once. The answer is remembered.
+- On the laptop, it allows LANDock and the host (Apollo).
+- On the desktop PC, it allows Moonlight. All of the desktop's displays share one copy of Moonlight, so there is no
+  question per display.
+
+If you skipped the option, run the installer again and tick it. On the laptop, the Host tab's *Allow through Windows
+Firewall…* button does the same.
 
 ## Use
 

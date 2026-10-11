@@ -39,6 +39,11 @@ public static class Paths
     public static string Credentials => Path.Combine(HostState, "credentials.txt");
     public static string LogDir => Path.Combine(DataDir, "logs");
     public static string StreamsDir => Path.Combine(DataDir, "streams");
+    /// <summary>The one Moonlight copy every display of this PC uses. Its place is fixed, so the firewall rule the installer adds for it
+    /// keeps working. Each display keeps its own pairing inside it (Moonlight.ini).</summary>
+    public static string MoonlightCopy => Path.Combine(DataDir, "moonlight");
+    /// <summary>Per display: the ids of the Moonlight process running it, and its log.</summary>
+    public static string RunsDir => Path.Combine(DataDir, "runs");
     public static string UpdatesDir => Path.Combine(DataDir, "updates");
 
     public static string InstanceDir(string key) => Path.Combine(HostState, key);
