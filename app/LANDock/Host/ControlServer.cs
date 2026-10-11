@@ -18,8 +18,14 @@ namespace LANDock.Host;
 public sealed record ControlIdentity(string HostId, string HostName, string Version, string Fingerprint, bool PairingOpen, int ControlPort);
 
 public sealed record PairRequest(string? Pin, string? Client, string? UltraId = null);
-public sealed record StreamOffer(string Name, int Width, int Height, int Fps);
-public sealed record SessionRequest(List<StreamOffer>? Streams, string? UltraId = null);
+/// <summary>One display asked for: its name, the size and frame rate, and the desktop screen (<see cref="MonitorOffer.Id"/>) it is
+/// shown on. ScreenId is null for an older desktop.</summary>
+public sealed record StreamOffer(string Name, int Width, int Height, int Fps, string? ScreenId = null);
+/// <summary>A screen of the desktop PC as the desktop reports it (plan-monitor-layout.md, step 1): the laptop mirrors the screens
+/// the user extends to. Rotation is in degrees (0, 90, 180 or 270), as Windows reports it; X and Y are the desktop's layout.</summary>
+public sealed record MonitorOffer(string Id, int X, int Y, int Width, int Height, int Rotation, bool Primary);
+/// <summary>Monitors is null when the desktop is older than the screen report: the laptop then keeps the fixed displays.</summary>
+public sealed record SessionRequest(List<StreamOffer>? Streams, string? UltraId = null, List<MonitorOffer>? Monitors = null);
 public sealed record StreamAgreement(string Name, int Port, int Width, int Height, int Fps);
 
 /// <summary>
@@ -89,6 +95,7 @@ public sealed class ControlServer : IAsyncDisposable
             var token = BearerToken(ctx);
             if (!_host.IsPaired(token)) return Results.Json(new { error = "this desktop is not paired with the host any more" }, statusCode: StatusCodes.Status401Unauthorized);
             if (!string.IsNullOrEmpty(r.UltraId)) HostIdentity.SetUltraId(token, r.UltraId);
+            _host.ReportMonitors(token, r.Monitors);
             var (ok, agreed, reason) = _host.Agree(r.Streams ?? new(), token);
             if (!ok) return Results.Json(new { error = reason }, statusCode: StatusCodes.Status400BadRequest);
             return Results.Json(agreed);

@@ -7,7 +7,7 @@ namespace LANDock.Client;
 public sealed record RemoteIdentity(string HostId, string HostName, string Version, string Fingerprint, bool PairingOpen, int ControlPort);
 public sealed record RemotePairing(string Token, string HostId, string HostName, List<RemoteStream> Streams);
 public sealed record RemoteStream(string Name, int Port, int Width, int Height, int Fps);
-public sealed record DisplayOffer(string Name, int Width, int Height, int Fps);
+public sealed record DisplayOffer(string Name, int Width, int Height, int Fps, string? ScreenId = null);
 
 /// <summary>A failure the user should read: wrong PIN, pairing closed, certificate changed, host not reachable...</summary>
 public sealed class ControlException : Exception
@@ -53,8 +53,11 @@ public sealed class ControlClient : IDisposable
         SendAsync<RemotePairing>(HttpMethod.Post, "/api/pair", new { pin, client = desktopName, ultraId }, null, ct);
 
     /// <summary>Asks the host for the displays at the given sizes. An empty list just returns the streams.</summary>
-    public Task<List<RemoteStream>> SessionAsync(string token, IEnumerable<DisplayOffer> offers, string ultraId, CancellationToken ct = default) =>
-        SendAsync<List<RemoteStream>>(HttpMethod.Post, "/api/session", new { streams = offers.ToList(), ultraId }, token, ct);
+    /// <param name="monitors">The screens this PC uses (plan-monitor-layout.md). Null leaves the report out, as an older PC does.</param>
+    public Task<List<RemoteStream>> SessionAsync(string token, IEnumerable<DisplayOffer> offers, string ultraId,
+        IEnumerable<LANDock.Host.MonitorOffer>? monitors = null, CancellationToken ct = default) =>
+        SendAsync<List<RemoteStream>>(HttpMethod.Post, "/api/session",
+            new { streams = offers.ToList(), ultraId, monitors = monitors?.ToList() }, token, ct);
 
     private async Task<T> SendAsync<T>(HttpMethod method, string path, object? body, string? token, CancellationToken ct)
     {

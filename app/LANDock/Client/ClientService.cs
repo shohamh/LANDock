@@ -30,6 +30,31 @@ public sealed class ClientService
             .Select(s => new MonitorInfo(++i, s.DeviceName, s.Bounds, s.Primary)).ToList();
     }
 
+    /// <summary>The screens that the given monitors are, as the handshake reports them (plan-monitor-layout.md, step 1). Only the
+    /// screens the streams use are reported: the user extends to those.</summary>
+    public static List<LANDock.Host.MonitorOffer> ScreenReport(IEnumerable<int> monitorIndexes)
+    {
+        var used = monitorIndexes.ToHashSet();
+        return Monitors().Where(m => used.Contains(m.Index))
+            .Select(m => new LANDock.Host.MonitorOffer(m.Name, m.Bounds.X, m.Bounds.Y, m.Bounds.Width, m.Bounds.Height,
+                ScreenRotation(m.Name), m.Primary))
+            .ToList();
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern bool EnumDisplaySettingsW(string deviceName, int modeNum, byte[] devMode);
+
+    /// <summary>The orientation of a display in degrees (0, 90, 180 or 270), from the DEVMODE that Windows keeps for it. In DEVMODEW the
+    /// field dmDisplayOrientation is at byte 84: after the 32-character device name (64 bytes), the version, size and extra bytes (8),
+    /// the fields (4) and the position (8).</summary>
+    public static int ScreenRotation(string deviceName)
+    {
+        const int EnumCurrentSettings = -1, OrientationOffset = 84;
+        var devMode = new byte[256];
+        if (!EnumDisplaySettingsW(deviceName, EnumCurrentSettings, devMode)) return 0;
+        return BitConverter.ToInt32(devMode, OrientationOffset) switch { 1 => 90, 2 => 180, 3 => 270, _ => 0 };
+    }
+
     /// <summary>The monitor a new display goes to by default: the monitors to the right of the primary one, in order.</summary>
     public static int DefaultMonitor(int position)
     {
@@ -250,14 +275,14 @@ public sealed class ClientService
         var offers = chosen.Select(s =>
         {
             var m = mons.FirstOrDefault(x => x.Index == s.Monitor) ?? mons.First();
-            return new DisplayOffer(s.Name, m.Bounds.Width, m.Bounds.Height, s.Fps);
+            return new DisplayOffer(s.Name, m.Bounds.Width, m.Bounds.Height, s.Fps, m.Name);
         }).ToList();
 
         List<RemoteStream> agreed;
         try
         {
             using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
-            agreed = await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId);
+            agreed = await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId, ScreenReport(chosen.Select(s => s.Monitor)));
         }
         catch (ControlException e) when (e.Status == 401)
         {

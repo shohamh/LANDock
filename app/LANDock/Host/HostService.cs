@@ -138,6 +138,8 @@ public sealed class HostService : IDisposable
         _advertiser.Stop();
         if (_control != null) { await _control.StopAsync(); _control = null; }
         _agreed.Clear();
+        _displayScreen.Clear();
+        _latestScreens = null;
         try { await Task.WhenAll(new[] { _supervisor, _acceptor, _layout }.Where(t => t != null)!.Select(t => t!.WaitAsync(TimeSpan.FromSeconds(8)))); }
         catch { }
 
@@ -272,6 +274,7 @@ public sealed class HostService : IDisposable
             var fps = o.Fps >= 45 && policy.MaxFps >= 60 ? 60 : 30;
             var a = new StreamAgreement(inst.Label, inst.Port, w, h, fps);
             _agreed[inst.Label] = a;
+            if (o.ScreenId != null) _displayScreen[inst.Label] = o.ScreenId; else _displayScreen.Remove(inst.Label);
             res.Add(a);
             Log.Info($"display {inst.Label}: agreed {w}x{h} at {fps} fps (port {inst.Port})");
         }
@@ -280,6 +283,23 @@ public sealed class HostService : IDisposable
 
     /// <summary>The last size agreed for each display (for the Host tab).</summary>
     public IReadOnlyDictionary<string, StreamAgreement> Agreed => _agreed;
+
+    private readonly Dictionary<string, IReadOnlyList<MonitorOffer>> _desktopScreens = new();
+    private readonly Dictionary<string, string> _displayScreen = new(StringComparer.OrdinalIgnoreCase);
+    private volatile IReadOnlyList<MonitorOffer>? _latestScreens;
+
+    /// <summary>Keeps the screens a desktop reported in its latest session request: the layout places the displays where those
+    /// screens are (plan-monitor-layout.md, step 3). A request without a screen report changes nothing.</summary>
+    public void ReportMonitors(string token, IReadOnlyList<MonitorOffer>? monitors)
+    {
+        if (monitors == null || token == "") return;
+        _desktopScreens[token] = monitors;
+        _latestScreens = monitors;
+        Log.Info($"a desktop reported {monitors.Count} screen(s): " + string.Join(", ", monitors.Select(m => $"{m.Id} {m.Width}x{m.Height} at {m.X},{m.Y} rotation {m.Rotation}")));
+    }
+
+    /// <summary>The screens a desktop last reported, or null when it has not reported any (an older desktop).</summary>
+    public IReadOnlyList<MonitorOffer>? ScreensOf(string token) => _desktopScreens.TryGetValue(token, out var m) ? m : null;
 
     // ---- state for the UI and the updater -----------------------------------------------------------------------------
 
@@ -395,6 +415,9 @@ public sealed class HostService : IDisposable
         finally { foreach (var a in apis.Values) a.Dispose(); }
     }
 
+    /// <summary>The desktop screen a display shows, as the desktop reported it in the last handshake (null when unknown).</summary>
+    private string? ScreenShownBy(string label) => _displayScreen.TryGetValue(label, out var id) ? id : null;
+
     private async Task WatchLayout(CancellationToken ct)
     {
         var last = "";
@@ -403,7 +426,11 @@ public sealed class HostService : IDisposable
             try
             {
                 var screens = VddTool.Screens();
-                var todo = HostPlanning.PlanLayout(screens, HostPlanning.Instances.Select(ActiveDisplayOf));
+                var report = _latestScreens;
+                var todo = report is { Count: > 0 }
+                    // the desktop's screens: each display goes where the screen it shows is, in the desktop's arrangement
+                    ? HostPlanning.PlanMirrorLayout(screens, HostPlanning.Instances.Select(i => (ActiveDisplayOf(i), ScreenShownBy(i.Label))), report)
+                    : HostPlanning.PlanLayout(screens, HostPlanning.Instances.Select(ActiveDisplayOf));
                 if (todo.Count > 0)
                 {
                     var msg = $"layout {string.Join(' ', todo)} -> {VddTool.Layout(todo).Split('\n').LastOrDefault()?.Trim()}";
