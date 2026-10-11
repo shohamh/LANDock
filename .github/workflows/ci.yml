@@ -17,6 +17,17 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          path-type: inherit
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-toolchain
+      - name: Build ggwave (the ultrasound identification library, a native DLL the tests load)
+        shell: msys2 {0}
+        run: ./scripts/build-ggwave.sh
       - name: Build and test
         run: dotnet test app/LANDock.Tests -c Release
 
@@ -63,10 +74,12 @@ jobs:
           New-Item -ItemType Directory -Force host/bin/assets | Out-Null
           foreach ($f in 'sunshine.exe', 'vddtool.exe') { Set-Content "host/bin/$f" 'stand-in' }
           Set-Content host/bin/assets/stand-in.txt 'stand-in'
+          New-Item -ItemType Directory -Force build/ggwave | Out-Null
+          Set-Content build/ggwave/ggwave.dll 'stand-in'
       - name: Package the parts (official Moonlight release, checksum verified) and build the installer
         shell: pwsh
         run: |
-          ./scripts/package-components.ps1 -Version 0.0.0-ci -AppExe app-out/LANDock.exe
+          ./scripts/package-components.ps1 -Version 0.0.0-ci -AppExe app-out/LANDock.exe -GgWaveDll build/ggwave/ggwave.dll
           ./scripts/build-installer.ps1 -Version 0.0.0-ci
       - name: The installer installs silently, per user, and the files are where the app expects them
         shell: pwsh

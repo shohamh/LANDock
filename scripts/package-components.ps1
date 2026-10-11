@@ -15,6 +15,7 @@
 # so an update that touches only the program does not make anybody download Apollo again.
 param(
   [Parameter(Mandatory)][string]$AppExe,
+  [Parameter(Mandatory)][string]$GgWaveDll,
   [string]$Version = '',
   [string]$HostBin = '',
   [string]$MoonlightZip = '',
@@ -29,6 +30,7 @@ if (-not $HostBin) { $HostBin = Join-Path $root 'host\bin' }
 if (-not $OutDir) { $OutDir = Join-Path $root 'dist' }
 if (-not $Stage) { $Stage = Join-Path $root 'build\stage' }
 if (-not (Test-Path $AppExe)) { throw "LANDock.exe not found: $AppExe" }
+if (-not (Test-Path $GgWaveDll)) { throw "ggwave.dll not found: $GgWaveDll (scripts\build-ggwave.sh builds it)" }
 foreach ($f in 'sunshine.exe', 'vddtool.exe', 'assets') { if (-not (Test-Path (Join-Path $HostBin $f))) { throw "$HostBin\$f is missing: run scripts\build-host.sh first" } }
 
 function Read-Env($path) {
@@ -56,6 +58,7 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # ---- app --------------------------------------------------------------------------------------------------------------
 Copy-Item $AppExe (Join-Path $app 'LANDock.exe')
+Copy-Item $GgWaveDll (Join-Path $app 'ggwave.dll')
 
 # ---- host -------------------------------------------------------------------------------------------------------------
 $apolloCommit = if (Test-Path (Join-Path $HostBin 'APOLLO-COMMIT.txt')) { (Get-Content (Join-Path $HostBin 'APOLLO-COMMIT.txt') -Raw).Trim() } else { $v.APOLLO_COMMIT }

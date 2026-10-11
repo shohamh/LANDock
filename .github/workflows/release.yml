@@ -41,6 +41,11 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: ggwave-dll
+          path: ggwave-in
+
+      - uses: actions/download-artifact@v4
+        with:
           name: host-bin
           path: host/bin
 
@@ -83,7 +88,7 @@ jobs:
         run: |
           $zip = Get-ChildItem moonlight-in -Filter 'MoonlightPortable-x64-*.zip' | Select-Object -First 1
           if (-not $zip) { throw 'the build produced no Moonlight zip' }
-          ./scripts/package-components.ps1 -Version $env:VERSION -AppExe app-in/LANDock.exe -MoonlightZip $zip.FullName -NotesFile notes.md
+          ./scripts/package-components.ps1 -Version $env:VERSION -AppExe app-in/LANDock.exe -GgWaveDll ggwave-in/ggwave.dll -MoonlightZip $zip.FullName -NotesFile notes.md
 
       - name: Build the installer (Inno Setup)
         shell: pwsh

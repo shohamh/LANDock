@@ -69,6 +69,7 @@ Name: "firewall"; Description: "Allow the LANDock host through the Windows Firew
 
 [Files]
 Source: "{#StageDir}\app\LANDock.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: app
+Source: "{#StageDir}\app\ggwave.dll"; DestDir: "{app}"; Flags: ignoreversion; Components: app
 Source: "{#StageDir}\host\*"; DestDir: "{app}\host"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: host
 Source: "{#StageDir}\client\*"; DestDir: "{app}\client"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: client
 Source: "{#RepoRoot}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion; Components: app

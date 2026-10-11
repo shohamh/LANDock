@@ -45,7 +45,7 @@ dotnet publish app/LANDock/LANDock.csproj -c Release -p:Version=0.1.0 -o build/a
 ```powershell
 # package the parts (downloads and checks the official Moonlight release unless -MoonlightZip is given),
 # put them together like the installer does, and build the installer
-.\scripts\package-components.ps1 -AppExe build\app-publish\LANDock.exe -Version 0.1.0
+.\scripts\package-components.ps1 -AppExe build\app-publish\LANDock.exe -GgWaveDll build\ggwave\ggwave.dll -Version 0.1.0
 .\scripts\assemble-install.ps1          # -> build\run (LANDock.exe, host\, client\), runnable without installing
 .\scripts\build-installer.ps1 -Version 0.1.0   # -> dist\LANDock-Setup-0.1.0.exe
 ```

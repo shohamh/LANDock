@@ -45,6 +45,20 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # the ultrasound identification library (ggwave) is a native DLL: the tests and the app need it next to the program
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          path-type: inherit
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-toolchain
+
+      - name: Build ggwave
+        shell: msys2 {0}
+        run: ./scripts/build-ggwave.sh
+
       - name: Unit tests
         run: dotnet test app/LANDock.Tests -c Release
 
@@ -60,6 +74,12 @@ jobs:
         with:
           name: app-exe
           path: app-out/LANDock.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ggwave-dll
+          path: build/ggwave/ggwave.dll
           if-no-files-found: error
 
   host:

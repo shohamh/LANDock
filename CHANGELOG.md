@@ -17,6 +17,7 @@ a version becomes the text of its GitHub release.
 ### Fixed
 - A failed action (such as Start displays for a desktop that is no longer paired) shows its message in a box. The message
   used to be cleared at once, so it was never seen.
+- The release build builds ggwave and ships `ggwave.dll` with the app (the v0.2.0 build failed its tests without it).
 
 ## [0.2.0] - 2026-10-11
 
