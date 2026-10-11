@@ -297,6 +297,8 @@ internal static class Cli
                 var h = client.Host(args[2]) ?? throw new ArgumentException("no such host");
                 var s = h.Streams.FirstOrDefault(x => x.Name.Equals(args[3], StringComparison.OrdinalIgnoreCase)) ?? throw new ArgumentException($"no display {args[3]}");
                 s.Monitor = int.Parse(args[4]);
+                // a display given a screen is in use; --off keeps it set up but not started
+                s.Enabled = !args.Contains("--off");
                 if (Opt(args, "--mode") is { } mode) s.DisplayMode = mode;
                 if (Opt(args, "--rect") is { } rect) s.WindowedRect = rect.Split(',').Select(int.Parse).ToArray();
                 settings.Save();

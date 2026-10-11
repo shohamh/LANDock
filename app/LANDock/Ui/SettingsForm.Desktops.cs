@@ -68,7 +68,7 @@ public sealed partial class SettingsForm
         _savePolicy.Enabled = name != null;
         if (name == null) { _policyNote.Text = ""; return; }
         var saved = HostIdentity.DisplaysOf(name);
-        foreach (var inst in HostPlanning.Instances)
+        foreach (var inst in HostPlanning.AllInstances)
         {
             var p = DisplayPolicies.For(saved, inst.Label);
             var sizeLabel = DisplayPolicies.Sizes.FirstOrDefault(s => s.width == p.MaxWidth && s.height == p.MaxHeight).label

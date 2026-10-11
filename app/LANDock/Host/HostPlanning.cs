@@ -10,13 +10,22 @@ public sealed record ScreenInfo(string Name, int X, int Y, int Width, int Height
 /// <summary>The logic that is easy to get wrong and easy to test: no processes, no files, no network.</summary>
 public static class HostPlanning
 {
-    /// <summary>Left to right: the stream order is also the screen order on the laptop.</summary>
-    public static readonly IReadOnlyList<Instance> Instances = new[]
+    /// <summary>
+    /// Every display slot the laptop can serve (plan-monitor-layout.md, step 2): slot k is instance k, on port 49989 + 1000 k. The
+    /// first three are the fixed displays; the others are started when a desktop asks for them.
+    /// </summary>
+    public static readonly IReadOnlyList<Instance> AllInstances = new[]
     {
         new Instance("c", 49989, "M1"),
         new Instance("d", 50989, "M2"),
         new Instance("e", 51989, "TV"),
+        new Instance("f", 52989, "M4"),
+        new Instance("g", 53989, "M5"),
+        new Instance("h", 54989, "M6"),
     };
+
+    /// <summary>The fixed displays, started with the host. Left to right: the stream order is also the screen order on the laptop.</summary>
+    public static readonly IReadOnlyList<Instance> Instances = AllInstances.Take(3).ToList();
 
     private static readonly Regex ScreenLine = new(@"^\\\\\.\\(DISPLAY\d+) pos=(-?\d+),(-?\d+) size=(\d+)x(\d+)", RegexOptions.Compiled);
     private static readonly Regex CreatedLine = new(@"Virtual Display created at \\\\\.\\(DISPLAY\d+)", RegexOptions.Compiled);

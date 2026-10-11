@@ -24,7 +24,7 @@ public static class HostSetup
         }
         var password = ApolloApi.Credentials()?.password ?? throw new InvalidOperationException("credentials file is unreadable");
 
-        foreach (var inst in HostPlanning.Instances)
+        foreach (var inst in HostPlanning.AllInstances)
         {
             var dir = Paths.InstanceDir(inst.Key);
             Directory.CreateDirectory(dir);

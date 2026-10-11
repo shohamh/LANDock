@@ -79,7 +79,7 @@ public sealed class ClientService
     }
 
     private static IEnumerable<StreamSettings> Selected(HostProfile h, string? only) =>
-        h.Streams.Where(s => string.IsNullOrEmpty(only) || s.Name.Equals(only, StringComparison.OrdinalIgnoreCase));
+        h.Streams.Where(s => s.Enabled && (string.IsNullOrEmpty(only) || s.Name.Equals(only, StringComparison.OrdinalIgnoreCase)));
 
     public HostProfile? Host(string? nameOrId) => string.IsNullOrWhiteSpace(nameOrId)
         ? Cfg.DefaultHost
@@ -202,11 +202,13 @@ public sealed class ClientService
     private void SyncStreams(HostProfile h, List<RemoteStream> remote)
     {
         var list = new List<StreamSettings>();
+        // a new display is in use when this PC has a screen for it: a desktop with three screens gets three displays at first
+        var screens = Monitors().Count;
         for (var i = 0; i < remote.Count; i++)
         {
             var r = remote[i];
             var s = h.Streams.FirstOrDefault(x => x.Name.Equals(r.Name, StringComparison.OrdinalIgnoreCase))
-                    ?? new StreamSettings { Name = r.Name, Monitor = DefaultMonitor(i), Audio = "client" };
+                    ?? new StreamSettings { Name = r.Name, Monitor = DefaultMonitor(i), Audio = "client", Enabled = i < screens };
             s.Name = r.Name;
             s.Port = r.Port;
             list.Add(s);
@@ -283,7 +285,7 @@ public sealed class ClientService
         {
             using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
             // every screen the user has set up for this laptop, not only the ones started now: the laptop lays out all of them
-            agreed = await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId, ScreenReport(h.Streams.Select(s => s.Monitor)));
+            agreed = await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId, ScreenReport(h.Streams.Where(s => s.Enabled).Select(s => s.Monitor)));
         }
         catch (ControlException e) when (e.Status == 401)
         {
@@ -316,12 +318,13 @@ public sealed class ClientService
             if (p != null) { Log.Info($"{h.Name} {s.Name}: already running, placing its window"); p.Refresh(); hw = p.MainWindowHandle; }
             else
             {
+                // the stream's own Moonlight copy comes first: the pairing check runs that copy
+                EnsureStream(h, s);
                 if (!await CanListAsync(h, s))
                 {
                     Log.Info($"{h.Name} {s.Name}: not paired with Moonlight on port {s.Port}; press Pair");
                     allOk = false; continue;
                 }
-                EnsureStream(h, s);
                 var args = new List<string> { "stream", HostAddr(h, s), "VD", "--display-mode", "windowed", "--absolute-mouse" };
                 if (!string.IsNullOrWhiteSpace(s.Resolution)) args.AddRange(new[] { "--resolution", s.Resolution });
                 if (s.Fps > 0) args.AddRange(new[] { "--fps", s.Fps.ToString() });

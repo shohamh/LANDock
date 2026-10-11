@@ -24,6 +24,17 @@ public class MirrorPlanTests
     }
 
     [Fact]
+    public void The_six_slots_have_their_labels_keys_and_ports_and_the_fixed_three_come_first()
+    {
+        var all = HostPlanning.AllInstances;
+        Assert.Equal(6, all.Count);
+        Assert.Equal(new[] { "M1", "M2", "TV", "M4", "M5", "M6" }, all.Select(i => i.Label));
+        Assert.Equal("cdefgh", string.Concat(all.Select(i => i.Key)));
+        for (var k = 0; k < 6; k++) Assert.Equal(HostPlanning.BasePort + 1000 * k, all[k].Port);
+        Assert.Equal(all.Take(3), HostPlanning.Instances);
+    }
+
+    [Fact]
     public void Six_screens_is_the_most_and_seven_is_refused()
     {
         var six = Enumerable.Range(0, 6).Select(i => Screen($"D{i}", i * 1920, 0, 1920, 1080)).ToList();

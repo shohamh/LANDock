@@ -103,7 +103,7 @@ public class E2ETests
         if (!Retry.WhileFalse(() => Tolerant(() => button.IsEnabled, false), TimeSpan.FromSeconds(20)).Result)
             throw new InvalidOperationException($"the button '{name}' stayed disabled");
         // the handler of this button waits for a question box: the Invoke call is made on its own thread, and the test goes on
-        if (name == "Forget selected desktop" || name == "Start displays")
+        if (name is "Forget selected desktop" or "Start displays" or "Pair…")
         {
             _ = Task.Run(() => Tolerant(() => { button.Invoke(); return true; }, false));
             return;
@@ -159,8 +159,29 @@ public class E2ETests
     private static string? WaitText(AutomationElement root, string pattern, int seconds = 60) =>
         Retry.WhileNull(() => TextMatching(root, pattern), TimeSpan.FromSeconds(seconds)).Result;
 
+    /// <summary>A dialog of the app by its title. The title is read through Win32 and the element is taken from the window's handle:
+    /// while a dialog is open, the app's window list through UI Automation can come back empty.</summary>
     private static Window? Dialog(Application app, UIA3Automation a, string title, int seconds = 60) =>
-        Retry.WhileNull(() => WindowsOf(app, a).FirstOrDefault(w => SafeTitle(w) == title), TimeSpan.FromSeconds(seconds)).Result;
+        Retry.WhileNull(() =>
+        {
+            var pid = (uint)app.ProcessId;
+            var handles = new List<IntPtr>();
+            EnumWindows((h, _) =>
+            {
+                GetWindowThreadProcessId(h, out var owner);
+                if (owner != pid || !IsWindowVisible(h)) return true;
+                var text = new System.Text.StringBuilder(256);
+                GetWindowText(h, text, text.Capacity);
+                if (text.ToString() == title) handles.Add(h);
+                return true;
+            }, IntPtr.Zero);
+            foreach (var h in handles)
+            {
+                try { return a.FromHandle(h).AsWindow(); }
+                catch (Exception ex) { Console.WriteLine($"dialog {title} ({h}): {ex.GetType().Name}"); }
+            }
+            return null;
+        }, TimeSpan.FromSeconds(seconds)).Result;
 
     /// <summary>A window's title; a window that is closing or busy can throw while UI Automation reads it, which counts as no title.</summary>
     private static string SafeTitle(Window w)
@@ -225,7 +246,8 @@ public class E2ETests
     {
         var idFile = Path.Combine(LaptopData, "host", "host-id.txt");
         var keptId = File.Exists(idFile) ? File.ReadAllText(idFile) : null;
-        if (Directory.Exists(LaptopData)) Directory.Delete(LaptopData, true);
+        // a folder that a program or a shell still has open is left as it is (its old files are harmless: settings and pairings are reset)
+        try { if (Directory.Exists(LaptopData)) Directory.Delete(LaptopData, true); } catch (IOException) { }
         Directory.CreateDirectory(Path.Combine(LaptopData, "host"));
         if (keptId != null) File.WriteAllText(idFile, keptId);
 
@@ -233,7 +255,8 @@ public class E2ETests
             foreach (var entry in Directory.GetFileSystemEntries(DesktopData))
             {
                 if (Path.GetFileName(entry).Equals("streams", StringComparison.OrdinalIgnoreCase)) continue;
-                if (Directory.Exists(entry)) Directory.Delete(entry, true); else File.Delete(entry);
+                try { if (Directory.Exists(entry)) Directory.Delete(entry, true); else File.Delete(entry); }
+                catch (IOException) { }
             }
         Directory.CreateDirectory(DesktopData);
 

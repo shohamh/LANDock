@@ -13,6 +13,9 @@ public sealed class StreamSettings
     public int Port { get; set; }
     /// <summary>1-based, left to right on this PC (see "monitors").</summary>
     public int Monitor { get; set; } = 1;
+    /// <summary>A display that is not in use (for example a fourth display on a desktop with three screens) is kept but not started
+    /// and not reported to the laptop.</summary>
+    public bool Enabled { get; set; } = true;
     /// <summary>The size the host agreed to for the last start (chosen from the monitor).</summary>
     public string Resolution { get; set; } = "";
     public int Fps { get; set; } = 60;

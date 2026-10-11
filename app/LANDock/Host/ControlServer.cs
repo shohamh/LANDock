@@ -90,12 +90,15 @@ public sealed class ControlServer : IAsyncDisposable
             return Results.Json(new { token, hostId = HostIdentity.HostId(), hostName = Environment.MachineName, streams = _host.StreamList() });
         });
 
-        app.MapPost("/api/session", (HttpContext ctx, SessionRequest r) =>
+        app.MapPost("/api/session", async (HttpContext ctx, SessionRequest r) =>
         {
             var token = BearerToken(ctx);
             if (!_host.IsPaired(token)) return Results.Json(new { error = "this desktop is not paired with the host any more" }, statusCode: StatusCodes.Status401Unauthorized);
             if (!string.IsNullOrEmpty(r.UltraId)) HostIdentity.SetUltraId(token, r.UltraId);
             _host.ReportMonitors(token, r.Monitors);
+            // the displays a desktop asks for that the laptop does not run yet are started first (plan-monitor-layout.md, step 2)
+            var failed = await _host.EnsureDisplaysAsync(r.Streams ?? new(), ctx.RequestAborted);
+            if (failed.Count > 0) return Results.Json(new { error = $"could not start {string.Join(", ", failed)} on the laptop (see its log)" }, statusCode: StatusCodes.Status500InternalServerError);
             var (ok, agreed, reason) = _host.Agree(r.Streams ?? new(), token);
             if (!ok) return Results.Json(new { error = reason }, statusCode: StatusCodes.Status400BadRequest);
             return Results.Json(agreed);

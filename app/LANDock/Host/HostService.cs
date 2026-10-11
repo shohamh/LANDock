@@ -123,7 +123,7 @@ public sealed class HostService : IDisposable
         Running = false; Raise();
 
         // end the streams politely first: that removes their virtual displays
-        foreach (var inst in HostPlanning.Instances)
+        foreach (var inst in Launched())
         {
             try
             {
@@ -138,6 +138,7 @@ public sealed class HostService : IDisposable
         _advertiser.Stop();
         if (_control != null) { await _control.StopAsync(); _control = null; }
         _agreed.Clear();
+        lock (_gate) _launched.Clear();
         _displayScreen.Clear();
         _latestScreens = null;
         try { await Task.WhenAll(new[] { _supervisor, _acceptor, _layout }.Where(t => t != null)!.Select(t => t!.WaitAsync(TimeSpan.FromSeconds(8)))); }
@@ -220,7 +221,7 @@ public sealed class HostService : IDisposable
     private async Task<int> UnpairNamedAsync(string name, CancellationToken ct)
     {
         var removed = 0;
-        foreach (var inst in HostPlanning.Instances)
+        foreach (var inst in Launched())
         {
             using var api = new ApolloApi(inst.Port);
             try
@@ -244,7 +245,7 @@ public sealed class HostService : IDisposable
 
     /// <summary>The streams this host serves: name and the Moonlight port for each.</summary>
     public List<StreamAgreement> StreamList() =>
-        HostPlanning.Instances.Select(i => new StreamAgreement(i.Label, i.Port, 0, 0, 0)).ToList();
+        HostPlanning.AllInstances.Select(i => new StreamAgreement(i.Label, i.Port, 0, 0, 0)).ToList();
 
     /// <summary>
     /// Agrees the size of each requested display. The desktop asks for the size of the monitor it shows the display on; the
@@ -261,7 +262,7 @@ public sealed class HostService : IDisposable
         var res = new List<StreamAgreement>();
         foreach (var o in offers)
         {
-            var inst = HostPlanning.Instances.FirstOrDefault(i => i.Label.Equals(o.Name, StringComparison.OrdinalIgnoreCase));
+            var inst = HostPlanning.AllInstances.FirstOrDefault(i => i.Label.Equals(o.Name, StringComparison.OrdinalIgnoreCase));
             if (inst == null) return (false, new(), $"unknown display '{o.Name}'");
             var policy = DisplayPolicies.For(choices, inst.Label);
             if (!policy.Enabled)
@@ -306,7 +307,9 @@ public sealed class HostService : IDisposable
     public List<InstanceStatus> Snapshot()
     {
         var res = new List<InstanceStatus>();
-        foreach (var inst in HostPlanning.Instances)
+        var started = Launched();
+        // the fixed displays always, and the others while a desktop uses them
+        foreach (var inst in HostPlanning.AllInstances.Where(i => HostPlanning.Instances.Contains(i) || started.Contains(i)))
         {
             bool up; lock (_gate) up = _up.TryGetValue(inst.Key, out var u) && u;
             res.Add(new InstanceStatus(inst.Label, inst.Port, up, ActiveDisplayOf(inst)));
@@ -315,7 +318,52 @@ public sealed class HostService : IDisposable
     }
 
     /// <summary>True when no stream is connected (a safe moment to replace the host files).</summary>
-    public bool IsIdle() => HostPlanning.Instances.All(i => ActiveDisplayOf(i) == null);
+    public bool IsIdle() => Launched().All(i => ActiveDisplayOf(i) == null);
+
+    private readonly HashSet<string> _launched = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The instances that are started now: the fixed three from the start of the host, the others since a desktop asked
+    /// for them (until the host stops).</summary>
+    public List<Instance> Launched()
+    {
+        lock (_gate) return HostPlanning.AllInstances.Where(i => _launched.Contains(i.Key)).ToList();
+    }
+
+    /// <summary>
+    /// Starts the instances that the desktop's displays need and that are not started yet, and waits until each answers. Returns the
+    /// labels of the displays that did not come up (the handshake refuses them).
+    /// </summary>
+    public async Task<List<string>> EnsureDisplaysAsync(IEnumerable<StreamOffer> offers, CancellationToken ct = default)
+    {
+        var failed = new List<string>();
+        foreach (var o in offers)
+        {
+            var inst = HostPlanning.AllInstances.FirstOrDefault(i => i.Label.Equals(o.Name, StringComparison.OrdinalIgnoreCase));
+            if (inst == null) continue;   // Agree names it
+            bool fresh;
+            lock (_gate) fresh = _launched.Add(inst.Key);
+            if (!fresh) continue;
+            try { Launch(inst); }
+            catch (Exception ex)
+            {
+                Log.Error($"instance {inst.Label} could not be started", ex);
+                lock (_gate) _launched.Remove(inst.Key);
+                failed.Add(inst.Label);
+                continue;
+            }
+            var up = false;
+            for (var i = 0; i < 90 && !up && !ct.IsCancellationRequested; i++)
+            {
+                up = await IsUpAsync(inst.Port, ct);
+                if (!up) await Task.Delay(1000, ct);
+            }
+            lock (_gate) _up[inst.Key] = up;
+            if (up) Log.Info($"instance {inst.Label} up on port {inst.Port} (started for a desktop)");
+            else { Log.Error($"instance {inst.Label} did not come up (see {Paths.InstanceLog(inst.Key)})", null); failed.Add(inst.Label); }
+            Raise();
+        }
+        return failed;
+    }
 
     public static string? ActiveDisplayOf(Instance inst) => HostPlanning.ActiveDisplay(ReadTailLines(Paths.InstanceLog(inst.Key), 512 * 1024));
 
@@ -325,12 +373,13 @@ public sealed class HostService : IDisposable
     {
         foreach (var inst in HostPlanning.Instances)
         {
+            lock (_gate) _launched.Add(inst.Key);
             Launch(inst);
             try { await Task.Delay(4000, ct); } catch (OperationCanceledException) { return; }   // one after another: a startup crash was seen when all of them probed encoders at once
         }
         while (!ct.IsCancellationRequested)
         {
-            foreach (var inst in HostPlanning.Instances)
+            foreach (var inst in Launched())
             {
                 Process? p; lock (_gate) _procs.TryGetValue(inst.Key, out p);
                 if (p != null && p.HasExited)
@@ -367,7 +416,7 @@ public sealed class HostService : IDisposable
 
     private async Task Accept(CancellationToken ct)
     {
-        var apis = HostPlanning.Instances.ToDictionary(i => i.Port, i => new ApolloApi(i.Port));
+        var apis = new Dictionary<int, ApolloApi>();
         var seen = new HashSet<string>();
         var lastGrant = DateTime.MinValue;
         var wasOpen = true;
@@ -375,6 +424,10 @@ public sealed class HostService : IDisposable
         {
             while (!ct.IsCancellationRequested)
             {
+                // an instance started for a desktop after this loop began is served from now on
+                foreach (var inst in Launched())
+                    if (!apis.ContainsKey(inst.Port)) apis[inst.Port] = new ApolloApi(inst.Port);
+
                 if (DateTime.Now < PairingUntil)
                 {
                     wasOpen = true;
@@ -429,8 +482,8 @@ public sealed class HostService : IDisposable
                 var report = _latestScreens;
                 var todo = report is { Count: > 0 }
                     // the desktop's screens: each display goes where the screen it shows is, in the desktop's arrangement
-                    ? HostPlanning.PlanMirrorLayout(screens, HostPlanning.Instances.Select(i => (ActiveDisplayOf(i), ScreenShownBy(i.Label))), report)
-                    : HostPlanning.PlanLayout(screens, HostPlanning.Instances.Select(ActiveDisplayOf));
+                    ? HostPlanning.PlanMirrorLayout(screens, Launched().Select(i => (ActiveDisplayOf(i), ScreenShownBy(i.Label))), report)
+                    : HostPlanning.PlanLayout(screens, Launched().Select(ActiveDisplayOf));
                 if (todo.Count > 0)
                 {
                     var msg = $"layout {string.Join(' ', todo)} -> {VddTool.Layout(todo).Split('\n').LastOrDefault()?.Trim()}";
@@ -507,7 +560,7 @@ public sealed class HostService : IDisposable
                     break;
             }
         }
-        foreach (var inst in HostPlanning.Instances)
+        foreach (var inst in HostPlanning.AllInstances)
         {
             try { Walk(JsonNode.Parse(File.ReadAllText(Path.Combine(Paths.InstanceDir(inst.Key), "state.json")))); } catch { }
         }

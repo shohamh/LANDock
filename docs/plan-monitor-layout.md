@@ -10,12 +10,20 @@ Status: decisions taken; steps 1 to 3 partly built (see Progress). Written 2026-
 | 1. Protocol | Built and tested. `SessionRequest.Monitors` (`MonitorOffer`: id, position, size, rotation, primary). Each stream also names its screen (`StreamOffer.ScreenId`). The desktop reads each screen's rotation from `EnumDisplaySettings` and sends the screens its streams use. The laptop stores the latest report (`HostService.ScreensOf`). An old desktop sends none and keeps the fixed row. Runtime check: a desktop with one screen reported `\\.\DISPLAY1 1920x1080 at 0,0 rotation 0` and the laptop agreed all three displays. |
 | 2. Laptop plan | Pure logic built and tested: `HostPlanning.PlanDisplays` (up to 6, instance keys c to h, ports 49989 + 1000 × k, a screen keeps its instance), `HostPlanning.Diff` (added, removed, resized). Not yet: the supervisor starts only the fixed three instances; instances for the planned slots 3 to 5 are not started, and removing a screen while connected does not stop its instance (live changes, step 6). |
 | 3. Layout | Built and tested. `HostPlanning.PlanMirrorLayout` moves each active display to the place of the desktop screen it shows (using `MirrorPositions`); two displays on one screen go side by side. The layout watcher uses it when a desktop has reported screens, and the fixed row otherwise. The desktop now reports every screen set up for the laptop, not only the ones started. Two-screen runtime test on this PC, with a virtual second monitor: M1 started on the real screen (DISPLAY1), its virtual display became a second screen (DISPLAY6, x = 1920); M2 was set to that screen and started; the desktop reported both screens; M2's display went to x = 3840, the place of the screen it shows, to the right of the real screen's mirror. A vertical arrangement (a screen above another) is not tested: on this PC the second screen is the laptop's own display, so moving it would fight the layout watcher. |
-| 4. Policy | Not started. |
-| 5. Desktop streams | Not started. |
+| 2b. Instances on demand | Built and tested on this PC. The laptop has six slots (M1, M2, TV, M4, M5, M6; ports 49989 to 54989). The first three start with the host; the others start when a desktop's handshake asks for them (`HostService.EnsureDisplaysAsync`), and stay up until the host stops. The handshake reports a failed start instead of agreeing to a display that is not running. |
+| 4. Policy | Partly: the Host tab's display grid and the defaults cover all six displays. Still keyed by the display name (M1 to M6), not by the desktop's monitor id. |
+| 5. Desktop streams | Built and tested on this PC. The laptop offers six displays; the desktop enables one per screen it has (the first three at pairing, more when it gets screens). `client assign` turns a display on when it gives it a screen (`--off` keeps it off). A display's Moonlight copy is made before its pairing check. A display turned on after the pairing needs its own pairing: `client pair --pin` pairs the enabled displays. |
 | 6. Live changes | Not started. |
 | 7. End to end | Not started. |
 
-Tests: `MonitorOfferTests` (protocol, screen ids, rotation) and `MirrorPlanTests` (plan, reuse, diff, layout, shared screens). 93 unit tests pass. E2E settings test: passed on the second attempt; the first attempt failed at the Pair dialog (the same intermittent step as before).
+Four-display runtime test on this PC (`tests/run-mirror-displays.sh`): M1, M2, TV and M4 each on its own screen; the screens are virtual monitors that the previous display created (DISPLAY1, 6, 7, 8, 9). The desktop reported four screens and the four displays sit side by side at x = 1920, 3840, 5760 and 7680. M4's instance started on demand.
+
+Open issues found by the runtime test:
+- The pairing step for a display turned on later took about 4 minutes (the `client pair` call waits for the pairing of a display whose instance is not up yet). Not understood yet.
+- The E2E settings test is still intermittent: it failed at the Pair step, at the Add-a-host dialog and at the desktop window in different runs. Causes seen: a Windows Firewall prompt for Moonlight, the dialog list read through UI Automation coming back empty while a dialog is open. The dialog lookup now goes through Win32; the failures continued after that change.
+- Live changes (step 6) and the policy keyed by monitor id (rest of step 4) are not built.
+
+Tests: `MonitorOfferTests` (protocol, screen ids, rotation), `MirrorPlanTests` (plan, reuse, diff, layout, shared screens, six slots). 94 unit tests pass. E2E settings test: passed on the second attempt; the first attempt failed at the Pair dialog (the same intermittent step as before).
 
 ## Goal
 
