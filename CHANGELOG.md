@@ -4,6 +4,38 @@ All notable changes to LANDock. The format follows [Keep a Changelog](https://ke
 project uses [Semantic Versioning](https://semver.org/). Releases are cut with `scripts/release.sh`; the section for
 a version becomes the text of its GitHub release.
 
+## [0.3.0] - 2026-10-11
+
+Experimental: the monitor layout was built and tested on one PC with virtual screens only. A second physical monitor, a
+portrait monitor and the mouse on a second PC have not been tested yet.
+
+### Added
+- **The laptop mirrors the desktop's screens.** The desktop reports its screens (position, size, rotation, which one is
+  primary) at each connection. Each display goes where the screen it shows is, so screens above or below, landscape and
+  portrait mix as in the Windows display settings. Older desktops keep the three fixed displays.
+- **Up to six displays** (M1, M2, TV, M4, M5, M6). A display's Apollo instance starts when a desktop asks for it.
+- **Live screens.** A screen plugged in while connected gets a display (its own, or the first free one) and starts. A
+  screen that goes away has its display stopped after 30 seconds, and it starts again when the screen comes back. A
+  screen whose size changes gets its display restarted. Moves are reported to the laptop at once. `client follow` follows
+  the screens from the command line.
+- **Display choices per screen.** The Host tab's grid lists each screen the desktop reported (also while it is offline).
+  Choices saved by older versions still apply.
+- **Screens are identified by their monitor device id**, which stays with the monitor when Windows renames its display.
+
+### Changed
+- Pairing covers all six displays, so a screen added later needs no PIN. The first pairing starts six Moonlight copies;
+  Windows may ask about the firewall once for each copy.
+- Pairing runs the handshake first, so the displays start before they are paired. A display that is not running is
+  reported at once instead of after minutes of retries.
+- `client assign` also turns the display on when it gives it a screen (`--off` keeps it off).
+
+### Known limitations
+- A screen that no display shows leaves a gap in the arrangement; Windows closes gaps, so the displays end up touching but
+  not where the desktop has them.
+- On one PC (where the laptop's displays are also the desktop's screens), removing a display makes the laptop re-lay the
+  displays for about 40 seconds. Not seen where the screens are separate machines.
+- The mouse is not tested end to end. The mapping of desktop pixels to laptop pixels is checked by calculation.
+
 ## [0.2.1] - 2026-10-11
 
 ### Changed
