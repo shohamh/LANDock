@@ -10,7 +10,7 @@
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 INST=$ROOT/build/run
-W=$ROOT/build/arrangement-run
+W=$ROOT/build/test-data
 APP="$INST/LANDock.exe"
 VDD="$INST/host/bin/vddtool.exe"
 REPORT="$ROOT/tests/arrangement-report.ps1"
@@ -25,7 +25,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-rm -rf "$W"; mkdir -p "$W/data"
+source "$ROOT/tests/_shared-data.sh"; reset_shared_data "$W"
 WW=$(cygpath -m "$W")
 export LANDOCK_DATA_DIR="$WW/data" LANDOCK_INSTALL_DIR=$(cygpath -m "$INST")
 

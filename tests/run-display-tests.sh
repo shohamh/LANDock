@@ -14,13 +14,13 @@ set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 RW=$(cygpath -m "$ROOT")
 INSTALL=$(cygpath -u "${INSTALL_DIR:-$ROOT/build/run}")
-WORK=$ROOT/build/test-run
+WORK=$ROOT/build/test-data
 MODE=${1:-all}
 log() { echo "[$(date +%T)] $*"; }
 for f in LANDock.exe host/bin/sunshine.exe host/bin/vddtool.exe client/moonlight/Moonlight.exe; do
   [ -f "$INSTALL/$f" ] || { echo "$INSTALL/$f is missing. Build the parts and run scripts/assemble-install.ps1 (see docs/building.md)."; exit 1; }
 done
-rm -rf "$WORK"; mkdir -p "$WORK/out" "$WORK/data"
+source "$ROOT/tests/_shared-data.sh"; reset_shared_data "$WORK"; mkdir -p "$WORK/out"
 WW=$(cygpath -m "$WORK")
 export LANDOCK_DATA_DIR="$WW/data" LANDOCK_INSTALL_DIR=$(cygpath -m "$INSTALL")
 APP="$INSTALL/LANDock.exe"

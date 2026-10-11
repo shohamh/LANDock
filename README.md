@@ -9,14 +9,15 @@ needed.
 
 ![How LANDock fits together](docs/images/architecture.svg)
 
-> **Status: experimental (v0.1).** Everything has been tested on one laptop with the host and the client on the same
-> machine (three streams, mouse sweeps across all displays, Notepad windows dragged between displays and typed into).
-> The first test with a second PC is still to come. Please open an issue with what you find.
+> **Status: experimental (v0.3).** Tested on one PC with the host and the client on the same machine, with virtual screens
+> (arrangements above and below, landscape and portrait, screens added and removed while connected). Not yet tested with a
+> second physical monitor or a second PC. Please open an issue with what you find.
 
 ## What you get
 
-- Up to **three** virtual displays today (two 1080p monitors and a 4K TV by default; resolution, refresh rate and
-  bitrate are settings), placed **laptop | M1 | M2 | TV**, left to right, whatever order they connect in.
+- Up to **six** virtual displays. They copy the **arrangement of your desktop's screens** (screens above or below, landscape or
+  portrait), so the laptop's screens sit where your desktop's do. A screen you plug in or unplug while connected gets its display
+  added or removed.
 - **Seamless pointer and keyboard**: move the mouse off your desktop's monitor onto a stream and it keeps moving
   across the laptop's displays; typing goes to the window under focus.
 - A **tray icon and settings window** for everything, plus a command line.
@@ -26,8 +27,19 @@ needed.
 
 ## Install
 
-You need two Windows 10/11 PCs on the same network. Download `LANDock-Setup-<version>.exe` from the
-[latest release](../../releases/latest) and run it on **both**:
+You need two Windows 10/11 PCs on the same network (the laptop, which hosts the displays, and the desktop PC, which shows them).
+
+### 1. Download the installer
+
+Go to the **[releases page](https://github.com/shohamh/LANDock/releases/latest)** and download **`LANDock-Setup-<version>.exe`**
+from the latest release (under *Assets*). Each release also lists `SHA256SUMS.txt`, which holds the checksum of the installer
+if you want to check the download.
+
+Direct link to the current release's installer: [LANDock-Setup-0.3.0.exe](https://github.com/shohamh/LANDock/releases/download/v0.3.0/LANDock-Setup-0.3.0.exe)
+
+### 2. Install on both PCs
+
+Run the installer on **both** PCs. It does not need administrator rights and installs for your user only:
 
 | On the laptop (host) | On the desktop PC (client) |
 |---|---|
@@ -37,11 +49,23 @@ You need two Windows 10/11 PCs on the same network. Download `LANDock-Setup-<ver
 The installer and the programs are not code-signed yet, so Windows SmartScreen may show a warning the first time
 ("More info" > "Run anyway").
 
+### 3. Allow the connection through the firewall
+
+Windows Firewall asks about the programs LANDock uses. Answer **Allow** (on *private* networks, which is your home
+network):
+
+- On the laptop, the installer's firewall option creates the rule for LANDock and the host (Apollo). If you skipped it, use
+  the *Allow through Windows Firewall…* button on the Host tab.
+- On the desktop PC, the first time each display connects, Windows asks about *Moonlight Game Streaming Client*. A display
+  has its own copy of Moonlight, so expect one question per display (up to six), once. The answer is remembered.
+
 ## Use
 
 1. **Laptop:** click the LANDock tray icon > *Start host*. The Host tab shows the **control port** (49900 unless it is taken), the **certificate fingerprint**, and a 4-digit **pairing PIN**.
 2. **Desktop PC:** open the LANDock settings > *Client* > *Add host…*. Enter the laptop's address and the control port, press *Check host*, and compare the fingerprint with the one on the laptop's Host tab. Enter the PIN and press *Pair*.
-3. Choose the monitor for each display in the table, then press *Start displays*. The laptop and the desktop agree on each display's size first (the size of its monitor, at most 4K), then the windows appear.
+3. Press *Start displays*. Each of your desktop's screens gets a display; the desktop tells the laptop the screens and their
+   arrangement, and the laptop and the desktop agree on each display's size first (the size of its screen, at most 4K).
+   Then the windows appear. To use a different screen for a display, change it in the Client tab's table.
 
 Next time, just press *Start displays*: the desktop reconnects with the token it saved, so no PIN is needed. A new PIN is only needed if the laptop forgot this PC (remove it from the list on the laptop's side) or the laptop's certificate changed (LANDock refuses to connect and says so).
 

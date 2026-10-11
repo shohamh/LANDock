@@ -7,14 +7,14 @@
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 INST=$ROOT/build/run
-W=$ROOT/build/follow-run
+W=$ROOT/build/test-data
 APP="$INST/LANDock.exe"
 VDD="$INST/host/bin/vddtool.exe"
 log() { echo "[$(date +%T)] $*"; }
 
 LANDOCK_DATA_DIR="$(cygpath -m "$W")/data" LANDOCK_INSTALL_DIR=$(cygpath -m "$INST") "$APP" host down > /dev/null 2>&1
 for i in $(seq 1 30); do tasklist //FI "IMAGENAME eq LANDock.exe" 2>/dev/null | grep -q LANDock.exe || break; sleep 1; done
-rm -rf "$W"; mkdir -p "$W/data"
+source "$ROOT/tests/_shared-data.sh"; reset_shared_data "$W"
 WW=$(cygpath -m "$W")
 export LANDOCK_DATA_DIR="$WW/data" LANDOCK_INSTALL_DIR=$(cygpath -m "$INST")
 FOLLOW_PID=""
