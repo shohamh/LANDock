@@ -5,7 +5,9 @@ using System.Text.RegularExpressions;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
+using FlaUI.Core.Input;
 using FlaUI.Core.Tools;
+using FlaUI.Core.WindowsAPI;
 using FlaUI.UIA3;
 using Xunit.Abstractions;
 
@@ -98,7 +100,14 @@ public class E2ETests
     private static void Press(Window w, string name)
     {
         var button = Need(w, name).AsButton();
-        Retry.WhileFalse(() => button.IsEnabled, TimeSpan.FromSeconds(20));
+        if (!Retry.WhileFalse(() => Tolerant(() => button.IsEnabled, false), TimeSpan.FromSeconds(20)).Result)
+            throw new InvalidOperationException($"the button '{name}' stayed disabled");
+        // the handler of this button waits for a question box: the Invoke call is made on its own thread, and the test goes on
+        if (name == "Forget selected desktop" || name == "Start displays")
+        {
+            _ = Task.Run(() => Tolerant(() => { button.Invoke(); return true; }, false));
+            return;
+        }
         if (OpensDialog.Contains(name))
         {
             w.SetForeground();
@@ -112,15 +121,35 @@ public class E2ETests
     private static List<string> SafeTexts(AutomationElement root)
     {
         var result = new List<string>();
-        AutomationElement[] items;
-        try { items = root.FindAllDescendants(cf => cf.ByControlType(ControlType.Text)); }
-        catch (System.Runtime.InteropServices.COMException) { return result; }
+        var items = Tolerant(() => root.FindAllDescendants(cf => cf.ByControlType(ControlType.Text)), Array.Empty<AutomationElement>());
         foreach (var e in items)
         {
-            try { if (e.Name is { } n) result.Add(n); }
-            catch (System.Runtime.InteropServices.COMException) { }
+            var name = Tolerant(() => e.Name, null);
+            if (name != null) result.Add(name);
         }
         return result;
+    }
+
+    /// <summary>Runs a UI Automation read, retrying a few times: a window that is changing raises COM errors for a moment
+    /// ("an event was unable to invoke any of the subscribers"). After the last try the fallback is the answer.</summary>
+    private static T Tolerant<T>(Func<T> read, T fallback)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try { return read(); }
+            catch (System.Runtime.InteropServices.COMException) when (attempt < 5) { Thread.Sleep(250); }
+            catch (System.Runtime.InteropServices.COMException) { return fallback; }
+        }
+    }
+
+    private static int CountOf(AutomationElement root, ControlType type) =>
+        Tolerant(() => root.FindAllDescendants(cf => cf.ByControlType(type)).Length, 0);
+
+    /// <summary>Writes what a window shows (its text labels) and a screenshot, for a step that failed.</summary>
+    private void Dump(string what, AutomationElement root)
+    {
+        _out.WriteLine($"{what}: texts = {string.Join(" | ", SafeTexts(root).Take(40))}");
+        Snap(what.Replace(' ', '-'));
     }
 
     /// <summary>The text of every label on the window that matches the pattern (the status labels have no other handle).</summary>
@@ -138,6 +167,32 @@ public class E2ETests
     {
         try { return w.Title; }
         catch (System.Runtime.InteropServices.COMException) { return ""; }
+    }
+
+    /// <summary>Selects the first row of a list, then waits until the button that acts on the row is enabled. A row can be outside
+    /// the visible part of its tab, where a click cannot reach it, so the selection goes through the pattern. The list is rebuilt
+    /// when a refresh runs and that drops the selection, so the selection is repeated until the button is enabled.</summary>
+    private static void SelectRowFor(Window w, string rowName, string buttonName)
+    {
+        var button = Need(w, buttonName).AsButton();
+        var ok = Retry.WhileFalse(() =>
+        {
+            var row = Tolerant(() => w.FindAllDescendants(cf => cf.ByControlType(ControlType.ListItem))
+                .FirstOrDefault(i => Tolerant(() => i.Name, "") == rowName), null);
+            if (row == null) return false;
+            Tolerant(() => { row.Patterns.SelectionItem.Pattern.Select(); return true; }, false);
+            return Tolerant(() => button.IsEnabled, false);
+        }, TimeSpan.FromSeconds(30)).Result;
+        if (!ok) throw new InvalidOperationException($"no row could be selected for '{buttonName}'");
+    }
+
+    /// <summary>Moves a drop-down list one item down (or up) with the arrow keys: the selection changes at once, and the form
+    /// saves it. The items of an open list are not reachable through UI Automation in this window, so the keys are used.</summary>
+    private static void MoveCombo(Window w, AutomationElement combo, bool down = true)
+    {
+        w.SetForeground();
+        combo.Focus();
+        Keyboard.Type(down ? VirtualKeyShort.DOWN : VirtualKeyShort.UP);
     }
 
     private static void Ok(Window dialog) => dialog.FindFirstDescendant(cf => cf.ByName("OK"))?.AsButton().Invoke();
@@ -161,6 +216,30 @@ public class E2ETests
             finally { p.Dispose(); }
         }
         Thread.Sleep(1500);
+    }
+
+    /// <summary>Starts a run with fresh settings and pairings. The laptop keeps its id and the desktop keeps its Moonlight copies:
+    /// the copies live in a folder named by the laptop's id, and Windows asks the firewall question once per program path,
+    /// so moving them every run would ask again every run. Only the Moonlight pairing data in the copies is reset.</summary>
+    private static void ResetFolders()
+    {
+        var idFile = Path.Combine(LaptopData, "host", "host-id.txt");
+        var keptId = File.Exists(idFile) ? File.ReadAllText(idFile) : null;
+        if (Directory.Exists(LaptopData)) Directory.Delete(LaptopData, true);
+        Directory.CreateDirectory(Path.Combine(LaptopData, "host"));
+        if (keptId != null) File.WriteAllText(idFile, keptId);
+
+        if (Directory.Exists(DesktopData))
+            foreach (var entry in Directory.GetFileSystemEntries(DesktopData))
+            {
+                if (Path.GetFileName(entry).Equals("streams", StringComparison.OrdinalIgnoreCase)) continue;
+                if (Directory.Exists(entry)) Directory.Delete(entry, true); else File.Delete(entry);
+            }
+        Directory.CreateDirectory(DesktopData);
+
+        var streams = Path.Combine(DesktopData, "streams");
+        if (Directory.Exists(streams))
+            foreach (var ini in Directory.GetFiles(streams, "Moonlight.ini", SearchOption.AllDirectories)) File.Delete(ini);
     }
 
     private static string ReadLog(string dataDir)
@@ -211,6 +290,43 @@ public class E2ETests
         return windows;
     }
 
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder className, int maxCount);
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+
+    /// <summary>A message box of the app (a question or an information box), found by its window class (#32770) and title. While
+    /// a message box is open, the window list of the app cannot be read, so the box is found by its own handle.</summary>
+    private const int IDOK = 1, IDYES = 6;
+    private const uint WM_COMMAND = 0x0111;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    /// <summary>Answers a message box of the app with the button's command, as the button itself would. The box is found by its
+    /// window class (#32770) and its title through Win32: while a box is open, the app's windows cannot be read through UI Automation.</summary>
+    private static void AnswerMessageBox(Application app, string title, int buttonId, int seconds = 20)
+    {
+        var box = Retry.WhileNull(() =>
+        {
+            var pid = (uint)app.ProcessId;
+            IntPtr found = IntPtr.Zero;
+            EnumWindows((h, _) =>
+            {
+                GetWindowThreadProcessId(h, out var owner);
+                if (owner != pid || !IsWindowVisible(h)) return true;
+                var cls = new System.Text.StringBuilder(64);
+                GetClassName(h, cls, cls.Capacity);
+                var text = new System.Text.StringBuilder(256);
+                GetWindowText(h, text, text.Capacity);
+                if (cls.ToString() == "#32770" && text.ToString() == title) found = h;
+                return true;
+            }, IntPtr.Zero);
+            return found == IntPtr.Zero ? (IntPtr?)null : found;
+        }, TimeSpan.FromSeconds(seconds)).Result ?? throw new InvalidOperationException($"no message box '{title}' appeared");
+        PostMessage(box, WM_COMMAND, (IntPtr)buttonId, IntPtr.Zero);
+    }
+
     /// <summary>A popup window of the app (a message box or a dialog) that matches the test.</summary>
     private static Window? Popup(Application app, UIA3Automation a, Func<Window, bool> match, int seconds = 30) =>
         Retry.WhileNull(() => WindowsOf(app, a).FirstOrDefault(w => { try { return match(w); } catch (System.Runtime.InteropServices.COMException) { return false; } }), TimeSpan.FromSeconds(seconds)).Result;
@@ -227,9 +343,7 @@ public class E2ETests
             return;
         }
         KillStale();
-        if (Directory.Exists(Work)) Directory.Delete(Work, true);
-        Directory.CreateDirectory(LaptopData);
-        Directory.CreateDirectory(DesktopData);
+        ResetFolders();
         using var a = new UIA3Automation();
         Application? laptop = null, desktop = null;
         try
@@ -240,10 +354,18 @@ public class E2ETests
             var lw = MainWindow(laptop, a);
             Tab(lw, "Host (laptop)");
             Press(lw, "Start host");
-            Assert.NotNull(WaitText(lw, @"^Host: running$", 90));
+            // the app's own log says when the host is ready; the status label follows on its next refresh
+            var ready = Retry.WhileFalse(() => ReadLog(LaptopData).Contains("host ready"), TimeSpan.FromSeconds(120)).Result;
+            if (!ready) Dump("laptop host not ready", lw);
+            Assert.True(ready, "the laptop host did not become ready (see the laptop log)");
+            var running = WaitText(lw, @"^Host: running$", 60);
+            if (running == null) Dump("laptop status not running", lw);
+            Assert.NotNull(running);
             var pin = Retry.WhileNull(() => SafeTexts(lw).FirstOrDefault(n => Regex.IsMatch(n, @"^\d{4}$")), TimeSpan.FromSeconds(20)).Result;
+            if (pin == null) Dump("laptop PIN missing", lw);
             Assert.NotNull(pin);
             var fingerprint = TextMatching(lw, @"certificate fingerprint [0-9A-F]{64}");
+            if (fingerprint == null) Dump("laptop fingerprint missing", lw);
             Assert.NotNull(fingerprint);
             Step($"laptop: running, PIN {pin}, {fingerprint}");
 
@@ -255,10 +377,17 @@ public class E2ETests
             Assert.NotNull(WaitText(dw, @"LAN: [1-9]\d* laptop\(s\) found", 90));
             Step("desktop: the laptop is listed; pairing it through the Pair… dialog");
 
-            // the list has one row: select it, then press Pair…
-            var rows = dw.FindAllDescendants(cf => cf.ByControlType(ControlType.ListItem));
-            Assert.NotEmpty(rows);
-            rows[0].Patterns.SelectionItem.Pattern.Select();
+            // the list has one row: select it, then press Pair…. The list is rebuilt when the discovery refreshes, which drops the
+            // selection, so the row is selected again until Pair… is enabled.
+            var pairButton = Need(dw, "Pair…").AsButton();
+            var selected = Retry.WhileFalse(() =>
+            {
+                var rs = Tolerant(() => dw.FindAllDescendants(cf => cf.ByControlType(ControlType.ListItem)), Array.Empty<AutomationElement>());
+                if (rs.Length == 0) return false;
+                Tolerant(() => { rs[0].Patterns.SelectionItem.Pattern.Select(); return true; }, false);
+                return Tolerant(() => pairButton.IsEnabled, false);
+            }, TimeSpan.FromSeconds(30)).Result;
+            Assert.True(selected, "no laptop row could be selected for Pair…");
             Press(dw, "Pair…");
             var add = Dialog(desktop, a, "Add a host", 15);
             if (add == null)
@@ -280,24 +409,24 @@ public class E2ETests
 
             var pairing = Dialog(desktop, a, "LANDock pairing", 300);
             Assert.NotNull(pairing);
-            var pairMsg = pairing!.FindAllDescendants(cf => cf.ByControlType(ControlType.Text)).Select(e => e.Name).FirstOrDefault() ?? "";
+            var pairMsg = SafeTexts(pairing!).FirstOrDefault() ?? "";
             Step($"desktop: pairing said: {pairMsg}");
             Assert.Contains("All streams are paired", pairMsg);
             Ok(pairing);
 
             // ---- the laptop lists the paired desktop -------------------------------------------------------------------
             Step("laptop: the desktop appears in the list of paired desktops");
-            var listed = Retry.WhileFalse(() => lw.FindAllDescendants(cf => cf.ByControlType(ControlType.ListItem)).Length >= 1, TimeSpan.FromSeconds(20)).Result;
+            // selecting the tab again makes the window lay out the list (and its rows) afresh
+            Tab(lw, "Host (laptop)");
+            var listed = Retry.WhileFalse(() => CountOf(lw, ControlType.ListItem) >= 1, TimeSpan.FromSeconds(30)).Result;
             if (!listed)
             {
-                // diagnostics: which controls the laptop window exposes right now
-                var items = lw.FindAllDescendants(cf => cf.ByControlType(ControlType.ListItem)).Select(e => e.Name).ToArray();
-                var lists = lw.FindAllDescendants(cf => cf.ByControlType(ControlType.List)).Length;
-                var texts = SafeTexts(lw).Where(t => t.Contains("SHOHAM") || t.Contains("paired", StringComparison.OrdinalIgnoreCase)).Take(5);
-                _out.WriteLine($"laptop desktop list: {items.Length} list items, {lists} lists, texts: {string.Join(" | ", texts)}");
-                Snap("laptop-no-desktop-list");
+                var onDisk = Path.Combine(LaptopData, "host", "paired-desktops.json");
+                _out.WriteLine($"laptop: {CountOf(lw, ControlType.ListItem)} list items, {CountOf(lw, ControlType.List)} lists; paired-desktops.json: " +
+                               (File.Exists(onDisk) ? File.ReadAllText(onDisk) : "missing"));
+                Dump("laptop desktop list missing", lw);
             }
-            Assert.True(listed);
+            Assert.True(listed, "the laptop does not list the paired desktop");
 
             // ---- the desktop saves the pairing; closing and reopening keeps it -----------------------------------------
             Shutdown(desktop); desktop = null;
@@ -320,7 +449,12 @@ public class E2ETests
             Step("desktop: give the laptop a nickname and make it a favorite");
             dw.FindAllDescendants(cf => cf.ByControlType(ControlType.ListItem))[0].Click();
             Press(dw, "Rename…");
-            var nick = Popup(desktop, a, w => w.Title == "Nickname", 20);
+            var nick = Popup(desktop, a, w => SafeTitle(w) == "Nickname", 20);
+            if (nick == null)
+            {
+                _out.WriteLine("windows of the desktop: " + string.Join(" | ", WindowsOf(desktop, a).Select(SafeTitle)));
+                Snap("no-nickname-dialog");
+            }
             Assert.NotNull(nick);
             var nickBox = nick!.FindFirstDescendant(cf => cf.ByControlType(ControlType.Edit)).AsTextBox();
             nickBox.Enter("Office PC");
@@ -379,10 +513,14 @@ public class E2ETests
             Tab(dw, "General / About");
             // the sound section's combo boxes, in order: mode, microphone, speakers
             var combos = dw.FindAllDescendants(cf => cf.ByControlType(ControlType.ComboBox)).Select(c => c.AsComboBox()).ToList();
-            var modeBox = combos[0];
-            modeBox.Items.First(i => i.Name.StartsWith("Audible")).Select();
-            combos[1].Items.First(i => i.Name.Contains("Realtek")).Select();
-            combos[2].Items.First(i => i.Name.Contains("Realtek")).Select();
+            // the mode goes to ultrasound and back to audible (only the choice is saved: the listening and announcing stay off)
+            MoveCombo(dw, combos[0], down: true);
+            Assert.True(Retry.WhileFalse(() => Settings(DesktopData)["Sound"]!["Mode"]!.GetValue<string>() == "ultrasound", TimeSpan.FromSeconds(10)).Result,
+                "the sound mode was not saved as ultrasound");
+            MoveCombo(dw, combos[0], down: false);
+            // the microphone and the speakers: the first real device (choosing a device plays nothing)
+            MoveCombo(dw, combos[1]);
+            MoveCombo(dw, combos[2]);
             var sound = Retry.WhileNull(() =>
             {
                 var s = Settings(DesktopData)["Sound"]!;
@@ -395,24 +533,23 @@ public class E2ETests
             // ---- forget: the laptop revokes the desktop, and the desktop can no longer connect ------------------------
             Step("laptop: forget the desktop");
             Tab(lw, "Host (laptop)");
-            var deskRow = Retry.WhileNull(() => lw.FindAllDescendants(cf => cf.ByControlType(ControlType.ListItem)).FirstOrDefault(), TimeSpan.FromSeconds(20)).Result;
-            Assert.NotNull(deskRow);
-            deskRow!.Click();
+            SelectRowFor(lw, Environment.MachineName, "Forget selected desktop");
             Press(lw, "Forget selected desktop");
-            var confirm = Popup(laptop, a, w => w.FindFirstDescendant(cf => cf.ByName("Yes")) != null, 20);
-            Assert.NotNull(confirm);
-            confirm!.FindFirstDescendant(cf => cf.ByName("Yes")).AsButton().Invoke();
-            var forgotten = Popup(laptop, a, w => w.FindFirstDescendant(cf => cf.ByName("OK")) != null && FirstText(w).Contains("forgotten"), 20);
-            Assert.NotNull(forgotten);
-            Assert.Contains("forgotten", FirstText(forgotten!));
-            Ok(forgotten);
+            // "Forget ...?" is answered Yes; the saved list on disk then has no desktop left, and the result box is answered OK
+            AnswerMessageBox(laptop, "LANDock", IDYES);
+            var laptopPairings = Path.Combine(LaptopData, "host", "paired-desktops.json");
+            Assert.True(Retry.WhileFalse(() => !File.Exists(laptopPairings) || !File.ReadAllText(laptopPairings).Contains("SHOHAM-LAPTOP"),
+                TimeSpan.FromSeconds(30)).Result, "the laptop still lists the desktop after Forget");
+            AnswerMessageBox(laptop, "LANDock", IDOK);
             Step("desktop: starting the displays now is refused");
             Tab(dw, "Client (desktop PC)");
-            var offered = dw.FindAllDescendants(cf => cf.ByControlType(ControlType.ListItem));
-            offered[0].Click();
+            // the first row (its name is the row number: the list shows the laptop's name in another column)
+            SelectRowFor(dw, "1", "Start displays");
             Press(dw, "Start displays");
-            var refused = WaitText(dw, @"no longer paired", 60);
-            Assert.NotNull(refused);
+            // the refusal is shown in a box; the desktop's log has the same message
+            AnswerMessageBox(desktop!, "LANDock", IDOK, 60);
+            Assert.True(Retry.WhileFalse(() => ReadLog(DesktopData).Contains("no longer paired"), TimeSpan.FromSeconds(10)).Result,
+                "the desktop did not refuse to start the displays");
 
             // ---- sound stayed off the whole time ------------------------------------------------------------------------
             Step("checking that no sound service started");

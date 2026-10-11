@@ -39,7 +39,11 @@ public sealed class ClientService
         return right.Count == 0 ? 1 : right[position % right.Count];
     }
 
-    public static string StreamFolder(HostProfile h, StreamSettings s) => Path.Combine(Paths.StreamsDir, h.Id, s.Name);
+    /// <summary>The folder name of a laptop's streams: the laptop's own id, which stays the same when the desktop pairs again.
+    /// Windows asks the firewall question once per program path, so the Moonlight copies must not move with each pairing.</summary>
+    public static string StreamKey(HostProfile h) => string.IsNullOrWhiteSpace(h.HostId) ? h.Id : h.HostId;
+
+    public static string StreamFolder(HostProfile h, StreamSettings s) => Path.Combine(Paths.StreamsDir, StreamKey(h), s.Name);
     private static string MoonlightExe(HostProfile h, StreamSettings s) => Path.Combine(StreamFolder(h, s), "Moonlight.exe");
     private static string HostAddr(HostProfile h, StreamSettings s) => $"{h.Address}:{s.Port}";
     private static string LogFile(HostProfile h, StreamSettings s) => Path.Combine(StreamFolder(h, s), $"stream-{s.Name}.log");
@@ -378,7 +382,14 @@ public sealed class ClientService
         Cfg.Hosts.Remove(h);
         if (Cfg.DefaultHostId == h.Id) Cfg.DefaultHostId = "";
         _settings.Save();
-        try { Directory.Delete(Path.Combine(Paths.StreamsDir, h.Id), true); } catch { }
+        // the Moonlight copies stay (Windows remembers their firewall answer); only their pairing data goes
+        try
+        {
+            var folder = Path.Combine(Paths.StreamsDir, StreamKey(h));
+            if (Directory.Exists(folder))
+                foreach (var ini in Directory.GetFiles(folder, "Moonlight.ini", SearchOption.AllDirectories)) File.Delete(ini);
+        }
+        catch { }
         Log.Info($"{h.Name}: removed from this PC");
     }
 

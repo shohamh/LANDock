@@ -4,6 +4,20 @@ All notable changes to LANDock. The format follows [Keep a Changelog](https://ke
 project uses [Semantic Versioning](https://semver.org/). Releases are cut with `scripts/release.sh`; the section for
 a version becomes the text of its GitHub release.
 
+## [0.2.1] - 2026-10-11
+
+### Changed
+- **Settings window is larger by default**: it opens at up to 1100 by 820 pixels, within the screen's work area, so the tabs
+  show their controls with less scrolling.
+- **Moonlight copies keep their place**: each laptop's copies live in a folder named by the laptop's id, which stays the same
+  when the desktop pairs again. Windows asks the firewall question once per program path, so the question is no longer asked
+  again for every pairing. Existing installs ask once more after this update.
+- **Forget** removes only the Moonlight pairing data; the Moonlight copies stay.
+
+### Fixed
+- A failed action (such as Start displays for a desktop that is no longer paired) shows its message in a box. The message
+  used to be cleared at once, so it was never seen.
+
 ## [0.2.0] - 2026-10-11
 
 ### Added

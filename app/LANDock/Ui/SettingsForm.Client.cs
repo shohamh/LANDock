@@ -356,21 +356,24 @@ public sealed partial class SettingsForm
     {
         var buttons = new[] { _pairBtn, _favBtn, _upBtn, _downBtn, _renameBtn, _removeBtn, _addHost, _check, _startStreams, _stopStreams };
         foreach (var b in buttons) b.Enabled = false;
+        string? failure = null;
         try
         {
             await work();
-            _hostInfo.ForeColor = SystemColors.ControlText;
         }
         catch (Exception ex)
         {
             Log.Error("client", ex);
-            _hostInfo.ForeColor = Color.Firebrick;
-            _hostInfo.Text = ex.Message;
+            failure = ex.Message;
         }
         foreach (var b in buttons) b.Enabled = true;
         _keys = new List<string>();
+        _hostInfo.ForeColor = SystemColors.ControlText;
         RefreshClient();
         FillStreams();
+        // shown as a box, because the status line is rewritten by the refresh above and the failure would be lost at once
+        if (failure != null)
+            MessageBox.Show(this, failure, "LANDock", MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
     // ---- refresh -----------------------------------------------------------------------------------------------------

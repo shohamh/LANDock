@@ -41,8 +41,10 @@ public sealed partial class SettingsForm : Form
         Text = "LANDock";
         Icon = TrayApp.LoadIcon(32);
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(760, 640);
-        MinimumSize = new Size(700, 600);
+        // large by default, so the tabs show their controls without scrolling on a typical screen (fits the screen's work area)
+        var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 800);
+        ClientSize = new Size(Math.Min(1100, area.Width - 40), Math.Min(820, area.Height - 60));
+        MinimumSize = new Size(900, 600);
         Font = SystemFonts.MessageBoxFont ?? Font;
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, FlowDirection = FlowDirection.RightToLeft, Height = 46, Padding = new Padding(10, 8, 10, 8) };
