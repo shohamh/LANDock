@@ -2,7 +2,9 @@ using System.Drawing;
 using System.Reflection;
 using LANDock.Client;
 using LANDock.Core;
+using LANDock.Discovery;
 using LANDock.Host;
+using LANDock.Ultrasound;
 using LANDock.Update;
 using Microsoft.Win32;
 
@@ -15,6 +17,13 @@ public sealed class AppServices
     public HostService Host { get; }
     public ClientService Client { get; }
     public Updater Updater { get; }
+    /// <summary>The laptop's microphone, listening for desktops (only when the host setting is on).</summary>
+    public UltraListener Listener { get; } = new();
+    /// <summary>The desktop's sound: its id played as ultrasound (only when the client setting is on).</summary>
+    public UltraAnnouncer Announcer { get; } = new();
+    /// <summary>The desktop's view of the LAN: the laptops found by mDNS (only when the client setting is on).</summary>
+    public LanBrowser Browser { get; }
+    private string _listenSig = "", _announceSig = "";
 
     public AppServices(Settings settings)
     {
@@ -22,6 +31,45 @@ public sealed class AppServices
         Host = new HostService(settings);
         Client = new ClientService(settings);
         Updater = new Updater(settings, Host, Client);
+        Browser = new LanBrowser(settings.Client.UltrasoundId);
+    }
+
+    /// <summary>Starts or stops the sensing services to match the settings. Safe to call at any time.</summary>
+    public void ApplySensing()
+    {
+        // restarts the microphone or speakers when the mode or the chosen device changes
+        var listenSig = $"{Settings.Sound.Mode}|{Settings.Sound.InputDeviceId}";
+        if (Settings.Host.ListenUltrasound)
+        {
+            if (!Listener.Running || listenSig != _listenSig) { Listener.Stop(); Listener.Start(Settings.Sound.Mode, Settings.Sound.InputDeviceId); }
+            _listenSig = listenSig;
+        }
+        else { Listener.Stop(); _listenSig = ""; }
+
+        var announceSig = $"{Settings.Sound.Mode}|{Settings.Sound.OutputDeviceId}|{Settings.Client.UltrasoundId}";
+        if (Settings.Client.DiscoverUltrasound)
+        {
+            if (!Announcer.Running || announceSig != _announceSig)
+            {
+                Announcer.Stop();
+                Announcer.Start(Settings.Client.UltrasoundId, Settings.Sound.Mode, Settings.Sound.OutputDeviceId);
+            }
+            _announceSig = announceSig;
+        }
+        else { Announcer.Stop(); _announceSig = ""; }
+        if (Settings.Client.DiscoverLan) { if (!Browser.Running) Browser.Start(); }
+        else Browser.Stop();
+    }
+
+    /// <summary>The laptops in the order the desktop should connect to them.</summary>
+    public List<ClientEntry> ClientEntries() =>
+        ClientRanking.Build(Settings.Client.Hosts, Browser.Snapshot(), Settings.Client.ManualOrder, DateTime.Now);
+
+    public void StopSensing()
+    {
+        Listener.Dispose();
+        Announcer.Dispose();
+        Browser.Dispose();
     }
 }
 
@@ -97,6 +145,7 @@ public sealed class TrayApp : ApplicationContext
         _tick.Start();
 
         app.Updater.Start();
+        app.ApplySensing();
         _ = AutoStartAsync(afterUpdate);
         RefreshMenu();
         // first run: nothing configured yet, so show the window instead of only an icon
@@ -111,13 +160,42 @@ public sealed class TrayApp : ApplicationContext
             var resumeStreams = File.Exists(Path.Combine(Paths.DataDir, "resume-streams"));
             foreach (var f in new[] { "resume-host", "resume-streams" }) try { File.Delete(Path.Combine(Paths.DataDir, f)); } catch { }
             if (Paths.HostInstalled && (_app.Settings.Host.AutoStart || resumeHost)) await _app.Host.StartAsync();
-            if (Paths.ClientInstalled && (_app.Settings.Client.AutoStartStreams || resumeStreams) && _app.Settings.Client.HostAddress != "") await _app.Client.StartAsync();
+            var defaultHost = _app.Settings.Client.DefaultHost;
+            if (Paths.ClientInstalled && resumeStreams && defaultHost is { Paired: true }) await _app.Client.StartAsync(defaultHost);
+            else if (Paths.ClientInstalled && _app.Settings.Client.AutoConnect) await AutoConnectOnce();
             if (afterUpdate) Balloon("LANDock updated", $"Now running version {AppInfo.Version}.", ToolTipIcon.Info);
         }
         catch (Exception ex)
         {
             Log.Error("auto start", ex);
             Balloon("LANDock", ex.Message, ToolTipIcon.Warning);
+        }
+    }
+
+    /// <summary>
+    /// Auto-connect: waits a few seconds for the LAN to answer, then connects to the first laptop in the order that is paired and
+    /// online. Nothing starts when displays already run or when no paired laptop is online.
+    /// </summary>
+    private async Task AutoConnectOnce()
+    {
+        var deadline = DateTime.Now.AddSeconds(8);
+        ClientEntry? choice = null;
+        while (DateTime.Now < deadline && choice == null)
+        {
+            await Task.Delay(1000);
+            choice = ClientRanking.AutoConnectChoice(_app.ClientEntries());
+        }
+        if (choice?.Profile == null) { Log.Info("auto-connect: no paired laptop is online"); return; }
+        if (_app.Client.AnyRunning()) return;
+        try
+        {
+            Log.Info($"auto-connect: {choice.Name} is first in the order and online");
+            await _app.Client.StartAsync(choice.Profile);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("auto-connect", ex);
+            Balloon("LANDock", $"Could not connect to {choice.Name}: {ex.Message}", ToolTipIcon.Warning);
         }
     }
 
@@ -131,7 +209,12 @@ public sealed class TrayApp : ApplicationContext
 
     private async Task ToggleStreams()
     {
-        try { if (_app.Client.AnyRunning()) await _app.Client.StopAsync(); else await _app.Client.StartAsync(); }
+        var h = _app.ClientEntries().FirstOrDefault(e => e.Saved && e.Paired && e.Online)?.Profile ?? _app.Settings.Client.DefaultHost;
+        try
+        {
+            if (h == null) throw new InvalidOperationException("no host yet: open the Client tab and add one");
+            if (_app.Client.IsRunning(h)) await _app.Client.StopAsync(h); else await _app.Client.StartAsync(h);
+        }
         catch (Exception ex) { Balloon("LANDock client", ex.Message, ToolTipIcon.Warning); _form.ShowTab("client"); }
         RefreshMenu();
     }
@@ -148,7 +231,8 @@ public sealed class TrayApp : ApplicationContext
         _tick.Stop();
         _icon.Visible = false;
         try { await _app.Host.StopAsync(); } catch { }
-        try { await _app.Client.StopAsync(); } catch { }
+        _app.StopSensing();
+        foreach (var h in _app.Settings.Client.Hosts) { try { await _app.Client.StopAsync(h); } catch { } }
         _app.Updater.Stop();
         ExitThread();
     }

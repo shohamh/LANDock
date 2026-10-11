@@ -19,6 +19,10 @@ public static class Paths
     /// <summary>Settings, credentials, certificates, logs. LANDOCK_DATA_DIR overrides it.</summary>
     public static string DataDir { get => _dataDir; set => _dataDir = Full(value); }
 
+    /// <summary>A short id of the data folder: single-instance locks are per data folder, so two instances with different
+    /// data folders (for example a laptop and a desktop test on one PC) can run side by side.</summary>
+    public static string InstanceId => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(DataDir)))[..8];
+
     public static string HostDir => Path.Combine(InstallDir, "host");
     public static string HostBin => Path.Combine(HostDir, "bin");
     public static string Sunshine => Path.Combine(HostBin, "sunshine.exe");

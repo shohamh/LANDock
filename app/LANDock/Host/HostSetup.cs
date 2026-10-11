@@ -80,16 +80,20 @@ public static class HostSetup
     }
 }
 
-/// <summary>The one Windows Firewall rule the host needs, so the desktop PC can reach the Apollo instances.</summary>
+/// <summary>The Windows Firewall rules the host needs, so desktop PCs can reach the Apollo streams (sunshine.exe) and the
+/// control port (LANDock.exe). Both are for private networks only.</summary>
 public static class Firewall
 {
     public const string RuleName = "LANDock host";
+    public const string ControlRuleName = "LANDock control";
 
-    public static bool RuleExists()
+    private static string AppExe => Environment.ProcessPath ?? Path.Combine(Paths.InstallDir, "LANDock.exe");
+
+    private static bool Exists(string rule)
     {
         try
         {
-            var psi = new ProcessStartInfo("netsh", $"advfirewall firewall show rule name=\"{RuleName}\"")
+            var psi = new ProcessStartInfo("netsh", $"advfirewall firewall show rule name=\"{rule}\"")
             { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
             using var p = Process.Start(psi)!;
             p.StandardOutput.ReadToEnd();
@@ -99,17 +103,23 @@ public static class Firewall
         catch { return false; }
     }
 
-    /// <summary>Adds the rule (Private networks only). Needs administrator rights, so Windows shows its own permission prompt.</summary>
+    public static bool RuleExists() => Exists(RuleName) && Exists(ControlRuleName);
+
+    /// <summary>Adds the rules (Private networks only). Needs administrator rights, so Windows shows its own permission prompt.</summary>
     public static bool AddRuleElevated()
     {
         try
         {
-            var args = $"advfirewall firewall delete rule name=\"{RuleName}\" & netsh advfirewall firewall add rule name=\"{RuleName}\" dir=in action=allow program=\"{Paths.Sunshine}\" profile=private enable=yes";
-            var psi = new ProcessStartInfo("cmd.exe", $"/c netsh {args}") { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden };
+            var args = string.Join(" & ",
+                $"netsh advfirewall firewall delete rule name=\"{RuleName}\"",
+                $"netsh advfirewall firewall add rule name=\"{RuleName}\" dir=in action=allow program=\"{Paths.Sunshine}\" profile=private enable=yes",
+                $"netsh advfirewall firewall delete rule name=\"{ControlRuleName}\"",
+                $"netsh advfirewall firewall add rule name=\"{ControlRuleName}\" dir=in action=allow program=\"{AppExe}\" profile=private enable=yes");
+            var psi = new ProcessStartInfo("cmd.exe", $"/c {args}") { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden };
             using var p = Process.Start(psi)!;
             p.WaitForExit(60_000);
             return RuleExists();
         }
-        catch (Exception ex) { Log.Error("could not add the firewall rule", ex); return false; }
+        catch (Exception ex) { Log.Error("could not add the firewall rules", ex); return false; }
     }
 }

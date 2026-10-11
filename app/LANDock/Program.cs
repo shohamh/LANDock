@@ -14,8 +14,8 @@ internal static class Program
         if (!tray) return Cli.Run(args);
 
         // one tray icon per user: a second start just asks the first to show its window
-        using var mutex = new Mutex(true, @"Local\LANDock.Tray", out var first);
-        using var show = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\LANDock.ShowSettings");
+        using var mutex = new Mutex(true, @"Local\LANDock.Tray." + Paths.InstanceId, out var first);
+        using var show = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\LANDock.ShowSettings." + Paths.InstanceId);
         if (!first)
         {
             show.Set();
@@ -27,7 +27,11 @@ internal static class Program
         var app = new AppServices(Settings.Load());
         var afterUpdate = args.Contains("--after-update");
         var context = new TrayApp(app, afterUpdate);
-        if (args.Contains("--settings")) context.ShowSettings();
+        if (args.Contains("--settings"))
+        {
+            var i = Array.IndexOf(args, "--tab");   // --settings --tab client opens the Client tab
+            context.ShowSettings(i >= 0 && i + 1 < args.Length ? args[i + 1] : "host");
+        }
 
         var waiter = new Thread(() =>
         {

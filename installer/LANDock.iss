@@ -21,6 +21,7 @@
 #endif
 #define AppName "LANDock"
 #define FirewallRule "LANDock host"
+#define ControlRule "LANDock control"
 
 [Setup]
 ; keep this GUID in step with Installer.AppId in app\LANDock\Update\Updater.cs
@@ -87,7 +88,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 ; one administrator prompt: replace the firewall rule for the host's program (private networks only)
-Filename: "{cmd}"; Parameters: "/c netsh advfirewall firewall delete rule name=""{#FirewallRule}"" & netsh advfirewall firewall add rule name=""{#FirewallRule}"" dir=in action=allow program=""{app}\host\bin\sunshine.exe"" profile=private enable=yes"; Verb: "runas"; Flags: runhidden shellexec waituntilterminated; Tasks: firewall; StatusMsg: "Allowing the LANDock host through the firewall..."
+Filename: "{cmd}"; Parameters: "/c netsh advfirewall firewall delete rule name=""{#FirewallRule}"" & netsh advfirewall firewall add rule name=""{#FirewallRule}"" dir=in action=allow program=""{app}\host\bin\sunshine.exe"" profile=private enable=yes & netsh advfirewall firewall delete rule name=""{#ControlRule}"" & netsh advfirewall firewall add rule name=""{#ControlRule}"" dir=in action=allow program=""{app}\LANDock.exe"" profile=private enable=yes"; Verb: "runas"; Flags: runhidden shellexec waituntilterminated; Tasks: firewall; StatusMsg: "Allowing LANDock through the firewall..."
 Filename: "{app}\LANDock.exe"; Parameters: "--tray"; Description: "Start LANDock"; Flags: nowait postinstall skipifsilent
 Filename: "{app}\LANDock.exe"; Parameters: "--tray --after-update"; Flags: nowait; Check: WizardSilent
 
@@ -113,7 +114,7 @@ begin
   begin
     // the firewall rule is machine-wide: remove it (Windows asks for permission) when we added one
     if FirewallRuleExists then
-      ShellExec('runas', ExpandConstant('{sys}\netsh.exe'), 'advfirewall firewall delete rule name="{#FirewallRule}"', '', SW_HIDE, ewWaitUntilTerminated, rc);
+      ShellExec('runas', ExpandConstant('{sys}\cmd.exe'), '/c netsh advfirewall firewall delete rule name="{#FirewallRule}" & netsh advfirewall firewall delete rule name="{#ControlRule}"', '', SW_HIDE, ewWaitUntilTerminated, rc);
   end;
   if CurUninstallStep = usPostUninstall then
   begin

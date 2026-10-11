@@ -7,11 +7,14 @@ namespace LANDock.Core;
 
 public sealed class StreamSettings
 {
+    /// <summary>The name the host gives this display (M1, M2, TV).</summary>
     public string Name { get; set; } = "";
+    /// <summary>Moonlight's port on the host. Set by the host at pairing and at every start.</summary>
     public int Port { get; set; }
-    /// <summary>1-based, left to right on the desktop PC (see "monitors").</summary>
+    /// <summary>1-based, left to right on this PC (see "monitors").</summary>
     public int Monitor { get; set; } = 1;
-    public string Resolution { get; set; } = "1920x1080";
+    /// <summary>The size the host agreed to for the last start (chosen from the monitor).</summary>
+    public string Resolution { get; set; } = "";
     public int Fps { get; set; } = 60;
     /// <summary>kbit/s; 0 lets Moonlight choose.</summary>
     public int Bitrate { get; set; }
@@ -23,20 +26,61 @@ public sealed class StreamSettings
     public int[]? WindowedRect { get; set; }
 }
 
+/// <summary>A host this PC has paired with. Everything needed to connect again later without a new PIN is kept here.</summary>
+public sealed class HostProfile
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    /// <summary>What the user calls it.</summary>
+    public string Name { get; set; } = "";
+    /// <summary>IP address or host name of the laptop.</summary>
+    public string Address { get; set; } = "";
+    /// <summary>The host's control port (where the handshake happens).</summary>
+    public int ControlPort { get; set; } = 49900;
+    /// <summary>The host's own id, checked at every connection (a different laptop on the same address is refused).</summary>
+    public string HostId { get; set; } = "";
+    /// <summary>Favorites come first in the list (see ClientRanking).</summary>
+    public bool Favorite { get; set; }
+    /// <summary>Certificate fingerprint the host showed when this PC first paired. Every connection must present it.</summary>
+    public string Fingerprint { get; set; } = "";
+    /// <summary>Token the host issued to this PC, encrypted for this Windows user.</summary>
+    public string TokenProtected { get; set; } = "";
+    public string LastConnected { get; set; } = "";
+    public List<StreamSettings> Streams { get; set; } = new();
+
+    [JsonIgnore]
+    public string Token
+    {
+        get => Protect.Unprotect(TokenProtected);
+        set => TokenProtected = Protect.ProtectText(value);
+    }
+
+    [JsonIgnore]
+    public bool Paired => TokenProtected != "";
+
+    public override string ToString() => string.IsNullOrWhiteSpace(Name) ? Address : Name;
+}
+
 public sealed class ClientSettings
 {
-    public string HostAddress { get; set; } = "";
-    /// <summary>"fullscreen" or "windowed".</summary>
+    /// <summary>The host "Start displays" uses when none is named.</summary>
+    public string DefaultHostId { get; set; } = "";
+    /// <summary>Find laptops on the LAN (mDNS) and list them.</summary>
+    public bool DiscoverLan { get; set; } = true;
+    /// <summary>Let laptops hear this PC: play its id as ultrasound now and then.</summary>
+    public bool DiscoverUltrasound { get; set; }
+    /// <summary>Connect by itself to the first paired laptop that is online, in the order of the list.</summary>
+    public bool AutoConnect { get; set; }
+    /// <summary>This PC's ultrasound id (8 bytes, hex). Made once; sent to the laptops it pairs with.</summary>
+    public string UltrasoundId { get; set; } = "";
+    /// <summary>Laptop ids in the order the user set with Move up / Move down.</summary>
+    public List<string> ManualOrder { get; set; } = new();
+    /// <summary>"fullscreen" or "windowed" (a stream can override it).</summary>
     public string DisplayMode { get; set; } = "fullscreen";
     public bool AutoStartStreams { get; set; }
-    public List<StreamSettings> Streams { get; set; } = DefaultStreams();
+    public List<HostProfile> Hosts { get; set; } = new();
 
-    public static List<StreamSettings> DefaultStreams() => new()
-    {
-        new StreamSettings { Name = "M1", Port = 49989, Monitor = 1, Resolution = "1920x1080", Fps = 60 },
-        new StreamSettings { Name = "M2", Port = 50989, Monitor = 2, Resolution = "1920x1080", Fps = 60, Audio = "host" },
-        new StreamSettings { Name = "TV", Port = 51989, Monitor = 3, Resolution = "3840x2160", Fps = 30, Bitrate = 20000, Audio = "host" },
-    };
+    [JsonIgnore]
+    public HostProfile? DefaultHost => Hosts.FirstOrDefault(h => h.Id == DefaultHostId) ?? Hosts.FirstOrDefault();
 }
 
 public sealed class HostSettings
@@ -47,6 +91,10 @@ public sealed class HostSettings
     public int PairingWindowMinutes { get; set; } = 10;
     /// <summary>Keep the laptop awake and unlocked-looking while the host runs (input cannot be injected into a locked session).</summary>
     public bool KeepAwake { get; set; } = true;
+    /// <summary>The control port desktop PCs connect to. 0 = the first free port from 49900 when the host starts; the chosen port is kept.</summary>
+    public int ControlPort { get; set; }
+    /// <summary>Listen on the microphone for the ultrasound of nearby desktops (off by default: it uses the microphone).</summary>
+    public bool ListenUltrasound { get; set; }
 }
 
 public sealed class UpdateSettings
@@ -72,9 +120,21 @@ public sealed class UpdateSettings
     public string SkippedVersion { get; set; } = "";
 }
 
+/// <summary>How the desktop ids travel (audible chirp or ultrasound), and which microphone and speakers carry them.</summary>
+public sealed class SoundSettings
+{
+    /// <summary>"audible" (a short chirp everyone hears; the default) or "ultrasound" (inaudible, 15-19.5 kHz).</summary>
+    public string Mode { get; set; } = "audible";
+    /// <summary>The microphone's device id; empty = the default microphone.</summary>
+    public string InputDeviceId { get; set; } = "";
+    /// <summary>The speakers' device id; empty = a physical output chosen automatically (never a virtual one).</summary>
+    public string OutputDeviceId { get; set; } = "";
+}
+
 public sealed class Settings
 {
     public bool StartWithWindows { get; set; } = true;
+    public SoundSettings Sound { get; set; } = new();
     public HostSettings Host { get; set; } = new();
     public ClientSettings Client { get; set; } = new();
     public UpdateSettings Updates { get; set; } = new();
@@ -113,15 +173,32 @@ public sealed class Settings
         File.Move(tmp, file, true);
     }
 
+    private static bool IsHex(string? s, int length) =>
+        s != null && s.Length == length && s.All(c => Uri.IsHexDigit(c));
+
     /// <summary>Keeps the values inside what the rest of the program can handle.</summary>
     public void Normalize()
     {
         Updates.IntervalMinutes = Math.Clamp(Updates.IntervalMinutes, 1, 24 * 60);
         if (Updates.Mode != "auto") Updates.Mode = "ask";
         Host.PairingWindowMinutes = Math.Clamp(Host.PairingWindowMinutes, 1, 120);
+        Host.ControlPort = Math.Clamp(Host.ControlPort, 0, 65535);
         if (Client.DisplayMode != "windowed") Client.DisplayMode = "fullscreen";
-        Client.HostAddress = (Client.HostAddress ?? "").Trim();
-        if (Client.Streams.Count == 0) Client.Streams = ClientSettings.DefaultStreams();
+        Client.Hosts ??= new();
+        Client.Hosts.RemoveAll(h => string.IsNullOrWhiteSpace(h.Address));
+        foreach (var h in Client.Hosts)
+        {
+            h.Address = h.Address.Trim();
+            h.ControlPort = Math.Clamp(h.ControlPort <= 0 ? 49900 : h.ControlPort, 1, 65535);
+            h.Streams ??= new();
+        }
+        if (!Client.Hosts.Any(h => h.Id == Client.DefaultHostId)) Client.DefaultHostId = Client.Hosts.FirstOrDefault()?.Id ?? "";
+        Client.ManualOrder ??= new();
+        Sound ??= new();
+        if (Sound.Mode != "ultrasound") Sound.Mode = "audible";
+        Sound.InputDeviceId ??= "";
+        Sound.OutputDeviceId ??= "";
+        if (!IsHex(Client.UltrasoundId, 16)) Client.UltrasoundId = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
     }
 }
 

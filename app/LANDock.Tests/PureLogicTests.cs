@@ -133,15 +133,16 @@ public class SettingsTests : IDisposable
     public void Settings_survive_a_save_and_load()
     {
         var s = new Settings();
-        s.Client.HostAddress = "192.168.1.50";
+        s.Client.Hosts.Add(new HostProfile { Name = "laptop", Address = "192.168.1.50", ControlPort = 49900, Fingerprint = "AB12" });
         s.Updates.Mode = "auto";
         s.Updates.IntervalMinutes = 7;
         s.Save(_file);
         var back = Settings.Load(_file);
-        Assert.Equal("192.168.1.50", back.Client.HostAddress);
+        Assert.Equal("192.168.1.50", back.Client.Hosts[0].Address);
+        Assert.Equal("AB12", back.Client.Hosts[0].Fingerprint);
         Assert.Equal("auto", back.Updates.Mode);
         Assert.Equal(7, back.Updates.IntervalMinutes);
-        Assert.Equal(3, back.Client.Streams.Count);
+        Assert.Equal(49900, back.Client.Hosts[0].ControlPort);
     }
 
     [Fact]

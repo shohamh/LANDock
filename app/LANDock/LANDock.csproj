@@ -34,7 +34,20 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <EmbeddedResource Include="Assets\landock.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Makaretu.Dns.Multicast.New" Version="0.38.0" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\build\ggwave\ggwave.dll" Condition="Exists('..\..\build\ggwave\ggwave.dll')" Link="ggwave.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

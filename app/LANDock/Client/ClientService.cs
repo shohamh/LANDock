@@ -9,10 +9,12 @@ public sealed record MonitorInfo(int Index, string Name, Rectangle Bounds, bool 
 public sealed record StreamStatus(string Name, bool Running, int Pid, Rectangle Window, int Monitor);
 
 /// <summary>
-/// The desktop PC side: one Moonlight window per virtual display of the laptop, each placed on its own monitor.
-/// Moonlight has no command-line option for which monitor to use, so after the video starts the window is moved
-/// there and switched to fullscreen with Moonlight's own hotkey. Every stream has its own Moonlight copy, because
-/// each stream is a separate "computer" (separate port) with its own pairing.
+/// The desktop PC side. A saved host profile holds everything needed to connect again: the address, the pinned certificate,
+/// the token, the streams and which monitor each stream goes to. Starting a host runs the handshake first (the displays are
+/// agreed with the host at the sizes of their monitors), then one Moonlight window per display is placed on its monitor.
+/// Moonlight has no command-line option for which monitor to use, so after the video starts the window is moved there and
+/// switched to fullscreen with Moonlight's own hotkey. Every stream has its own Moonlight copy, per host, because each
+/// stream is a separate "computer" (its own port) with its own pairing.
 /// </summary>
 public sealed class ClientService
 {
@@ -28,36 +30,47 @@ public sealed class ClientService
             .Select(s => new MonitorInfo(++i, s.DeviceName, s.Bounds, s.Primary)).ToList();
     }
 
-    public static string StreamFolder(StreamSettings s) => Path.Combine(Paths.StreamsDir, s.Name);
-    private static string MoonlightExe(StreamSettings s) => Path.Combine(StreamFolder(s), "Moonlight.exe");
-    private string HostAddr(StreamSettings s) => $"{Cfg.HostAddress}:{s.Port}";
-    private static string LogFile(StreamSettings s) => Path.Combine(StreamFolder(s), $"stream-{s.Name}.log");
-
-    private void RequireReady()
+    /// <summary>The monitor a new display goes to by default: the monitors to the right of the primary one, in order.</summary>
+    public static int DefaultMonitor(int position)
     {
-        if (!Paths.ClientInstalled) throw new InvalidOperationException("the client component is not installed (Moonlight is missing)");
-        if (string.IsNullOrWhiteSpace(Cfg.HostAddress)) throw new InvalidOperationException("set the laptop's address first (Client settings)");
-        if (Cfg.Streams.Count == 0) throw new InvalidOperationException("no streams configured");
+        var mons = Monitors();
+        var primary = mons.FirstOrDefault(m => m.Primary)?.Index ?? 1;
+        var right = mons.Where(m => m.Index > primary).Select(m => m.Index).ToList();
+        return right.Count == 0 ? 1 : right[position % right.Count];
     }
 
-    private IEnumerable<StreamSettings> Selected(string? only) =>
-        Cfg.Streams.Where(s => string.IsNullOrEmpty(only) || s.Name.Equals(only, StringComparison.OrdinalIgnoreCase));
+    public static string StreamFolder(HostProfile h, StreamSettings s) => Path.Combine(Paths.StreamsDir, h.Id, s.Name);
+    private static string MoonlightExe(HostProfile h, StreamSettings s) => Path.Combine(StreamFolder(h, s), "Moonlight.exe");
+    private static string HostAddr(HostProfile h, StreamSettings s) => $"{h.Address}:{s.Port}";
+    private static string LogFile(HostProfile h, StreamSettings s) => Path.Combine(StreamFolder(h, s), $"stream-{s.Name}.log");
+
+    private static void RequireMoonlight()
+    {
+        if (!Paths.ClientInstalled) throw new InvalidOperationException("the client component is not installed (Moonlight is missing)");
+    }
+
+    private static IEnumerable<StreamSettings> Selected(HostProfile h, string? only) =>
+        h.Streams.Where(s => string.IsNullOrEmpty(only) || s.Name.Equals(only, StringComparison.OrdinalIgnoreCase));
+
+    public HostProfile? Host(string? nameOrId) => string.IsNullOrWhiteSpace(nameOrId)
+        ? Cfg.DefaultHost
+        : Cfg.Hosts.FirstOrDefault(h => h.Id == nameOrId || h.Name.Equals(nameOrId, StringComparison.OrdinalIgnoreCase));
 
     // ---- Moonlight copies ---------------------------------------------------------------------------------------------
 
     /// <summary>Makes sure the stream's own Moonlight copy exists and matches the installed client component.
     /// Pairing data (Moonlight.ini, in the copy) is never touched.</summary>
-    public static void EnsureStream(StreamSettings s)
+    public static void EnsureStream(HostProfile h, StreamSettings s)
     {
-        var dir = StreamFolder(s);
+        var dir = StreamFolder(h, s);
         var marker = Path.Combine(dir, ".landock-client-version");
         var want = Paths.ReadVersion(Paths.ClientVersionFile);
         var have = File.Exists(marker) ? File.ReadAllText(marker).Trim() : "";
-        if (File.Exists(MoonlightExe(s)) && have == want) return;
+        if (File.Exists(MoonlightExe(h, s)) && have == want) return;
         Directory.CreateDirectory(dir);
         CopyTree(Paths.MoonlightSource, dir);
         File.WriteAllText(marker, want);
-        Log.Info($"stream {s.Name}: Moonlight copy ready in {dir}");
+        Log.Info($"{h.Name} {s.Name}: Moonlight copy ready in {dir}");
     }
 
     private static void CopyTree(string from, string to)
@@ -75,11 +88,11 @@ public sealed class ClientService
 
     // ---- running Moonlight --------------------------------------------------------------------------------------------
 
-    private static async Task<string> RunMoonlightAsync(StreamSettings s, IEnumerable<string> args, int timeoutSec)
+    private static async Task<string> RunMoonlightAsync(HostProfile h, StreamSettings s, IEnumerable<string> args, int timeoutSec)
     {
-        var psi = new ProcessStartInfo(MoonlightExe(s))
+        var psi = new ProcessStartInfo(MoonlightExe(h, s))
         {
-            WorkingDirectory = StreamFolder(s), UseShellExecute = false, CreateNoWindow = true,
+            WorkingDirectory = StreamFolder(h, s), UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true,
         };
         foreach (var a in args) psi.ArgumentList.Add(a);
@@ -92,12 +105,12 @@ public sealed class ClientService
         return await so + "\n" + await se;
     }
 
-    private async Task<bool> CanListAsync(StreamSettings s) =>
-        Regex.IsMatch(await RunMoonlightAsync(s, new[] { "list", HostAddr(s) }, 25), @"(?m)^VD\b");
+    private async Task<bool> CanListAsync(HostProfile h, StreamSettings s) =>
+        Regex.IsMatch(await RunMoonlightAsync(h, s, new[] { "list", HostAddr(h, s) }, 25), @"(?m)^VD\b");
 
-    private static List<Process> StreamProcesses(StreamSettings s)
+    private static List<Process> StreamProcesses(HostProfile h, StreamSettings s)
     {
-        var dir = StreamFolder(s).TrimEnd('\\') + "\\";
+        var dir = StreamFolder(h, s).TrimEnd('\\') + "\\";
         var res = new List<Process>();
         foreach (var p in Process.GetProcessesByName("Moonlight"))
         {
@@ -107,26 +120,69 @@ public sealed class ClientService
         return res;
     }
 
-    public bool AnyRunning() => Cfg.Streams.Any(s => StreamProcesses(s).Count > 0);
+    public bool AnyRunning() => Cfg.Hosts.Any(h => h.Streams.Any(s => StreamProcesses(h, s).Count > 0));
+    public bool IsRunning(HostProfile h) => h.Streams.Any(s => StreamProcesses(h, s).Count > 0);
 
-    // ---- commands -----------------------------------------------------------------------------------------------------
+    // ---- identity and pairing ----------------------------------------------------------------------------------------
 
-    /// <summary>Pairs every stream with the laptop. The laptop accepts the PIN by itself during its pairing window.</summary>
-    public async Task<bool> PairAsync(string pin, string? only = null)
+    /// <summary>First contact: what the host at this address says about itself, and the fingerprint of its certificate.
+    /// Nothing is saved; the user compares the fingerprint with the one on the laptop and then pairs.</summary>
+    public static async Task<(RemoteIdentity identity, string fingerprint)> CheckHostAsync(string address, int port, string? pinnedFingerprint = null)
     {
-        RequireReady();
+        using var c = new ControlClient(address, port, pinnedFingerprint);
+        var id = await c.IdentityAsync();
+        return (id, c.SeenFingerprint ?? id.Fingerprint);
+    }
+
+    /// <summary>
+    /// Pairs this PC with a host: the control port hands out a token for the PIN, then Moonlight pairs each stream with the same PIN
+    /// (the laptop accepts it during its pairing window). The profile is saved with the token and the host's streams.
+    /// The profile's fingerprint must already be set (CheckHostAsync, confirmed by the user).
+    /// </summary>
+    public async Task<bool> PairAsync(HostProfile h, string pin)
+    {
         if (!Regex.IsMatch(pin ?? "", @"^\d{4}$")) throw new ArgumentException("the PIN is the 4 digits shown on the laptop");
-        Log.Info($"pairing with {Cfg.HostAddress}; the host must be running on the laptop (it accepts new pairings for a short window)");
+        if (string.IsNullOrEmpty(h.Fingerprint)) throw new InvalidOperationException("check the host first: its certificate has not been confirmed");
+        RequireMoonlight();
+        Log.Info($"{h.Name}: pairing with {h.Address}:{h.ControlPort} (the host must be running on the laptop: it accepts new pairings for a short window)");
+
+        RemotePairing reply;
+        using (var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint))
+            reply = await c.PairAsync(pin!, Environment.MachineName, _settings.Client.UltrasoundId);
+        h.Token = reply.Token;
+        h.HostId = reply.HostId;
+        if (string.IsNullOrWhiteSpace(h.Name)) h.Name = reply.HostName;
+        SyncStreams(h, reply.Streams);
+        h.LastConnected = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+        _settings.Save();
+        Log.Info($"{h.Name}: the host accepted this PC; {reply.Streams.Count} display(s) offered");
+
         var bad = 0;
-        foreach (var s in Selected(only))
+        foreach (var s in Selected(h, null))
         {
-            EnsureStream(s);
-            if (await PairOneAsync(s, pin!)) Log.Info($"stream {s.Name}: paired");
+            EnsureStream(h, s);
+            if (await PairOneAsync(h, s, pin)) Log.Info($"{h.Name} {s.Name}: paired");
             else bad++;
         }
-        if (bad > 0) Log.Info($"{bad} stream(s) not paired: is the host running on the laptop, is its firewall open, is the PIN current?");
-        else Log.Info("all streams paired");
+        if (bad > 0) Log.Info($"{h.Name}: {bad} display(s) not paired with Moonlight; pair again with the PIN shown on the laptop");
+        else Log.Info($"{h.Name}: all displays paired");
         return bad == 0;
+    }
+
+    /// <summary>Takes the host's stream list (names and ports) as the truth, keeping the monitor choices of streams that still exist.</summary>
+    private void SyncStreams(HostProfile h, List<RemoteStream> remote)
+    {
+        var list = new List<StreamSettings>();
+        for (var i = 0; i < remote.Count; i++)
+        {
+            var r = remote[i];
+            var s = h.Streams.FirstOrDefault(x => x.Name.Equals(r.Name, StringComparison.OrdinalIgnoreCase))
+                    ?? new StreamSettings { Name = r.Name, Monitor = DefaultMonitor(i), Audio = "client" };
+            s.Name = r.Name;
+            s.Port = r.Port;
+            list.Add(s);
+        }
+        h.Streams = list;
     }
 
     /// <summary>
@@ -134,19 +190,19 @@ public sealed class ClientService
     /// as soon as the last step went through and the laptop lists the stream's app, the pairing is done and Moonlight is ended.
     /// A pairing can fail by timing (the PIN arrived late), so it is tried up to three times.
     /// </summary>
-    private async Task<bool> PairOneAsync(StreamSettings s, string pin)
+    private async Task<bool> PairOneAsync(HostProfile h, StreamSettings s, string pin)
     {
         for (var attempt = 1; attempt <= 3; attempt++)
         {
-            if (await CanListAsync(s)) { if (attempt == 1) Log.Info($"stream {s.Name}: already paired and reachable"); return true; }
-            Log.Info($"stream {s.Name}: pairing on port {s.Port}{(attempt > 1 ? $" (attempt {attempt})" : "")} ...");
+            if (await CanListAsync(h, s)) { if (attempt == 1) Log.Info($"{h.Name} {s.Name}: already paired and reachable"); return true; }
+            Log.Info($"{h.Name} {s.Name}: pairing on port {s.Port}{(attempt > 1 ? $" (attempt {attempt})" : "")} ...");
             var output = new System.Text.StringBuilder();
-            var psi = new ProcessStartInfo(MoonlightExe(s))
+            var psi = new ProcessStartInfo(MoonlightExe(h, s))
             {
-                WorkingDirectory = StreamFolder(s), UseShellExecute = false, CreateNoWindow = true,
+                WorkingDirectory = StreamFolder(h, s), UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true,
             };
-            foreach (var a in new[] { "pair", HostAddr(s), "--pin", pin }) psi.ArgumentList.Add(a);
+            foreach (var a in new[] { "pair", HostAddr(h, s), "--pin", pin }) psi.ArgumentList.Add(a);
             using var p = Process.Start(psi)!;
             void Collect(object _, DataReceivedEventArgs e) { if (e.Data != null) lock (output) output.AppendLine(e.Data); }
             p.OutputDataReceived += Collect; p.ErrorDataReceived += Collect;
@@ -159,8 +215,8 @@ public sealed class ClientService
                 await Task.Delay(2000);
                 string text; lock (output) text = output.ToString();
                 if (text.Contains("Critical")) break;                                        // Moonlight says it failed
-                if (text.Contains("phrase=pairchallenge") && await CanListAsync(s)) { ok = true; break; }   // last step done and the laptop knows us
-                if (p.HasExited) { ok = await CanListAsync(s); break; }
+                if (text.Contains("phrase=pairchallenge") && await CanListAsync(h, s)) { ok = true; break; }   // last step done and the laptop knows us
+                if (p.HasExited) { ok = await CanListAsync(h, s); break; }
             }
             try { if (!p.HasExited) p.Kill(true); } catch { }
             if (ok) return true;
@@ -168,26 +224,75 @@ public sealed class ClientService
             foreach (var l in last.Split(Environment.NewLine).Where(l => Regex.IsMatch(l, "rror|fail|denied|Critical|offline")).Take(4)) Log.Info("    " + l.Trim());
             await Task.Delay(2000);
         }
-        Log.Info($"stream {s.Name}: NOT paired");
+        Log.Info($"{h.Name} {s.Name}: NOT paired");
         return false;
     }
 
-    /// <summary>Starts every stream (or one) and puts each Moonlight window on its monitor.</summary>
-    public async Task<bool> StartAsync(string? only = null)
+    // ---- starting, stopping ------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Connects to the host (the handshake): asks for each display at the size of the monitor it is shown on, takes the
+    /// sizes and ports the host agrees to, and saves them. Then starts every display (or one) and places its window.
+    /// Without a token (never paired, or the host forgot this PC) nothing starts: pair again with the PIN from the laptop.
+    /// </summary>
+    public async Task<bool> StartAsync(HostProfile h, string? only = null)
     {
-        RequireReady();
-        var allOk = true;
-        foreach (var s in Selected(only))
+        RequireMoonlight();
+        if (!h.Paired) throw new InvalidOperationException($"{h.Name} is not paired yet: press Pair and enter the PIN shown on the laptop");
+        var chosen = Selected(h, only).ToList();
+        if (chosen.Count == 0) throw new InvalidOperationException($"{h.Name} has no displays (check the connection first)");
+
+        var mons = Monitors();
+        var offers = chosen.Select(s =>
         {
-            var procs = StreamProcesses(s);
+            var m = mons.FirstOrDefault(x => x.Index == s.Monitor) ?? mons.First();
+            return new DisplayOffer(s.Name, m.Bounds.Width, m.Bounds.Height, s.Fps);
+        }).ToList();
+
+        List<RemoteStream> agreed;
+        try
+        {
+            using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
+            agreed = await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId);
+        }
+        catch (ControlException e) when (e.Status == 401)
+        {
+            throw new InvalidOperationException($"this PC is no longer paired with {h.Name}: press Pair and enter the PIN from the laptop");
+        }
+        foreach (var a in agreed)
+        {
+            var s = h.Streams.FirstOrDefault(x => x.Name.Equals(a.Name, StringComparison.OrdinalIgnoreCase));
+            if (s == null) continue;
+            s.Port = a.Port; s.Resolution = $"{a.Width}x{a.Height}"; s.Fps = a.Fps;
+        }
+        h.LastConnected = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+        _settings.Save();
+        Log.Info($"{h.Name}: connected; agreed " + string.Join(", ", agreed.Select(a => $"{a.Name} {a.Width}x{a.Height}@{a.Fps}")));
+        // the laptop may leave out displays that are off for this PC: those are not started
+        var offered = agreed.Select(a => a.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var left = chosen.Where(x => !offered.Contains(x.Name)).Select(x => x.Name).ToList();
+        if (left.Count > 0) Log.Info($"{h.Name}: not offered to this PC (off in the laptop's Host tab): {string.Join(", ", left)}");
+        chosen = chosen.Where(x => offered.Contains(x.Name)).ToList();
+        if (chosen.Count == 0)
+            throw new InvalidOperationException($"{h.Name} offers no display to this PC: turn one on in the laptop's Host tab (Displays for this desktop)");
+
+        var allOk = true;
+        foreach (var s in chosen)
+        {
+            var procs = StreamProcesses(h, s);
             var p = procs.FirstOrDefault();
             var launched = false;
-            var h = IntPtr.Zero;
-            if (p != null) { Log.Info($"stream {s.Name}: already running, placing its window"); p.Refresh(); h = p.MainWindowHandle; }
+            var hw = IntPtr.Zero;
+            if (p != null) { Log.Info($"{h.Name} {s.Name}: already running, placing its window"); p.Refresh(); hw = p.MainWindowHandle; }
             else
             {
-                EnsureStream(s);
-                var args = new List<string> { "stream", HostAddr(s), "VD", "--display-mode", "windowed", "--absolute-mouse" };
+                if (!await CanListAsync(h, s))
+                {
+                    Log.Info($"{h.Name} {s.Name}: not paired with Moonlight on port {s.Port}; press Pair");
+                    allOk = false; continue;
+                }
+                EnsureStream(h, s);
+                var args = new List<string> { "stream", HostAddr(h, s), "VD", "--display-mode", "windowed", "--absolute-mouse" };
                 if (!string.IsNullOrWhiteSpace(s.Resolution)) args.AddRange(new[] { "--resolution", s.Resolution });
                 if (s.Fps > 0) args.AddRange(new[] { "--fps", s.Fps.ToString() });
                 if (s.Bitrate > 0) args.AddRange(new[] { "--bitrate", s.Bitrate.ToString() });
@@ -197,26 +302,26 @@ public sealed class ClientService
                 // (so the stream does not keep this program's output open)
                 var psi = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe")
                 {
-                    WorkingDirectory = StreamFolder(s), UseShellExecute = false, CreateNoWindow = true,
+                    WorkingDirectory = StreamFolder(h, s), UseShellExecute = false, CreateNoWindow = true,
                     RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-                    Arguments = $"/c \"\"{MoonlightExe(s)}\" {argText} > \"{LogFile(s)}\" 2>&1\"",
+                    Arguments = $"/c \"\"{MoonlightExe(h, s)}\" {argText} > \"{LogFile(h, s)}\" 2>&1\"",
                 };
                 Process.Start(psi);
                 launched = true;
-                for (var i = 0; i < 80 && h == IntPtr.Zero; i++)
+                for (var i = 0; i < 80 && hw == IntPtr.Zero; i++)
                 {
                     await Task.Delay(500);
-                    p = StreamProcesses(s).FirstOrDefault();
-                    if (p != null) { p.Refresh(); h = p.MainWindowHandle; }
+                    p = StreamProcesses(h, s).FirstOrDefault();
+                    if (p != null) { p.Refresh(); hw = p.MainWindowHandle; }
                 }
-                if (p == null) { Log.Info($"stream {s.Name}: Moonlight did not start or exited; see {LogFile(s)}"); allOk = false; continue; }
-                if (h == IntPtr.Zero) { Log.Info($"stream {s.Name}: no window appeared within 40 s; see {LogFile(s)}"); allOk = false; continue; }
+                if (p == null) { Log.Info($"{h.Name} {s.Name}: Moonlight did not start or exited; see {LogFile(h, s)}"); allOk = false; continue; }
+                if (hw == IntPtr.Zero) { Log.Info($"{h.Name} {s.Name}: no window appeared within 40 s; see {LogFile(h, s)}"); allOk = false; continue; }
             }
-            var mon = Monitors().FirstOrDefault(m => m.Index == s.Monitor);
-            if (mon == null) { Log.Info($"stream {s.Name}: monitor {s.Monitor} does not exist on this PC (see the Client tab); leaving the window where it is"); allOk = false; continue; }
+            var mon = mons.FirstOrDefault(m => m.Index == s.Monitor);
+            if (mon == null) { Log.Info($"{h.Name} {s.Name}: monitor {s.Monitor} does not exist on this PC (see the Client tab); leaving the window where it is"); allOk = false; continue; }
             if (launched)
             {
-                if (!await WaitVideoAsync(LogFile(s), 40)) Log.Info($"stream {s.Name}: no video within 40 s (see {LogFile(s)}); placing the window anyway");
+                if (!await WaitVideoAsync(LogFile(h, s), 40)) Log.Info($"{h.Name} {s.Name}: no video within 40 s (see {LogFile(h, s)}); placing the window anyway");
                 await Task.Delay(1500);
             }
             var mode = string.IsNullOrEmpty(s.DisplayMode) ? Cfg.DisplayMode : s.DisplayMode;
@@ -224,37 +329,37 @@ public sealed class ClientService
             allOk &= ok;
             p!.Refresh();
             Native.GetWindowRect(p.MainWindowHandle, out var r);
-            Log.Info($"stream {s.Name}: on monitor {s.Monitor} at ({r.L},{r.T}) {r.Width}x{r.Height} - " +
+            Log.Info($"{h.Name} {s.Name}: on monitor {s.Monitor} at ({r.L},{r.T}) {r.Width}x{r.Height} - " +
                      (ok ? (mode == "fullscreen" ? "fullscreen, covers the monitor" : "windowed, as configured")
                          : "could not be placed; use Ctrl+Alt+Shift+X in that window to toggle fullscreen"));
             await Task.Delay(2000);
         }
-        Log.Info("done. Click once in a window to give it keyboard focus; moving the mouse between monitors moves the laptop's pointer between its displays");
+        Log.Info($"{h.Name}: done. Click once in a window to give it keyboard focus; moving the mouse between monitors moves the laptop's pointer between its displays");
         return allOk;
     }
 
-    public async Task StopAsync(string? only = null)
+    public async Task StopAsync(HostProfile h, string? only = null)
     {
-        foreach (var s in Selected(only))
+        foreach (var s in Selected(h, only))
         {
             try
             {
-                if (File.Exists(MoonlightExe(s)) && !string.IsNullOrWhiteSpace(Cfg.HostAddress))
-                    await RunMoonlightAsync(s, new[] { "quit", HostAddr(s) }, 20);
+                if (File.Exists(MoonlightExe(h, s)) && s.Port > 0)
+                    await RunMoonlightAsync(h, s, new[] { "quit", HostAddr(h, s) }, 20);
             }
-            catch (Exception ex) { Log.Error($"stream {s.Name}: quit", ex); }
-            foreach (var p in StreamProcesses(s)) { try { p.Kill(true); } catch { } p.Dispose(); }
-            Log.Info($"stream {s.Name}: stopped (the laptop removes its virtual display)");
+            catch (Exception ex) { Log.Error($"{h.Name} {s.Name}: quit", ex); }
+            foreach (var p in StreamProcesses(h, s)) { try { p.Kill(true); } catch { } p.Dispose(); }
+            Log.Info($"{h.Name} {s.Name}: stopped (the laptop removes its virtual display)");
         }
     }
 
-    public List<StreamStatus> Status()
+    public List<StreamStatus> Status(HostProfile h)
     {
         var mons = Monitors();
         var res = new List<StreamStatus>();
-        foreach (var s in Cfg.Streams)
+        foreach (var s in h.Streams)
         {
-            var p = StreamProcesses(s).FirstOrDefault();
+            var p = StreamProcesses(h, s).FirstOrDefault();
             if (p == null) { res.Add(new StreamStatus(s.Name, false, 0, Rectangle.Empty, 0)); continue; }
             Native.GetWindowRect(p.MainWindowHandle, out var r);
             var rect = Rectangle.FromLTRB(r.L, r.T, r.R, r.B);
@@ -263,6 +368,18 @@ public sealed class ClientService
             res.Add(new StreamStatus(s.Name, true, p.Id, rect, on));
         }
         return res;
+    }
+
+    /// <summary>Forgets a host on this PC: its streams stop and its saved data is removed. The host keeps its list of paired
+    /// desktops; remove this PC there too if you want it to be refused.</summary>
+    public async Task RemoveAsync(HostProfile h)
+    {
+        await StopAsync(h);
+        Cfg.Hosts.Remove(h);
+        if (Cfg.DefaultHostId == h.Id) Cfg.DefaultHostId = "";
+        _settings.Save();
+        try { Directory.Delete(Path.Combine(Paths.StreamsDir, h.Id), true); } catch { }
+        Log.Info($"{h.Name}: removed from this PC");
     }
 
     // ---- window placement ---------------------------------------------------------------------------------------------

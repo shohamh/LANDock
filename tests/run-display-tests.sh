@@ -1,7 +1,7 @@
 #!/bin/bash
 # run-display-tests.sh [scenario|moves|all] : end-to-end test on ONE machine (host and client both on this PC, loopback).
 #
-# It starts the host with the LANDock app, pairs and starts the three streams with the app's client commands, then drives
+# It starts the host with the LANDock app, adds it to the client over the control port (handshake, pairing), starts the three displays, then drives
 # the desktop:
 #   scenario : opens a Notepad on each virtual display, moves it around, types into it (read back and compared),
 #              sweeps the mouse across laptop + all three displays
@@ -38,26 +38,21 @@ log "== host up"
 for i in $(seq 1 120); do grep -q "Host is ready\|ERROR\|already running" "$WORK/host-up.log" 2>/dev/null && break; sleep 2; done
 grep -q "Host is ready" "$WORK/host-up.log" || { log "host did not come up:"; tail -5 "$WORK/host-up.log"; exit 2; }
 PIN=$(tr -d '[:space:]' < "$WORK/pin.txt")
+CPORT=$(grep -o "Control port (desktop PCs connect here): [0-9]*" "$WORK/host-up.log" | grep -o "[0-9]*$")
+[ -n "$CPORT" ] || { log "no control port in the host output"; tail -5 "$WORK/host-up.log"; exit 2; }
 
-# settings for this run: loopback, three windowed streams side by side on the laptop screen
-cat > "$WORK/data/settings.json" <<JSON
-{
-  "client": {
-    "hostAddress": "127.0.0.1",
-    "displayMode": "windowed",
-    "streams": [
-      { "name": "M1", "port": 49989, "monitor": 1, "resolution": "1920x1080", "fps": 60, "windowedRect": [10, 90, 630, 400] },
-      { "name": "M2", "port": 50989, "monitor": 1, "resolution": "1920x1080", "fps": 60, "audio": "host", "windowedRect": [650, 90, 630, 400] },
-      { "name": "TV", "port": 51989, "monitor": 1, "resolution": "3840x2160", "fps": 30, "bitrate": 20000, "audio": "host", "windowedRect": [1290, 90, 630, 400] }
-    ]
-  }
-}
-JSON
+# the desktop PC side: add the laptop over the control port (the fingerprint is trusted here: this is the same PC),
+# pair, put the three displays on the laptop screen, then start (the handshake runs first)
+log "== client: add the laptop (control port $CPORT) and pair"
+"$APP" client add-host 127.0.0.1 --port "$CPORT" --pin "$PIN" --trust --name loopback > "$WORK/pair.log" 2>&1 || { log "pairing failed:"; tail -8 "$WORK/pair.log"; exit 3; }
+"$APP" client assign loopback M1 1 --mode windowed --rect 10,90,630,400 >> "$WORK/pair.log" 2>&1
+"$APP" client assign loopback M2 1 --mode windowed --rect 650,90,630,400 >> "$WORK/pair.log" 2>&1
+"$APP" client assign loopback TV 1 --mode windowed --rect 1290,90,630,400 >> "$WORK/pair.log" 2>&1
+grep -E "paired|NOT" "$WORK/pair.log" | cut -c1-160
 
-log "== client: pair, start"
-"$APP" client pair --pin "$PIN" > "$WORK/pair.log" 2>&1 || { log "pairing failed:"; tail -8 "$WORK/pair.log"; exit 3; }
-"$APP" client start > "$WORK/start.log" 2>&1 || { log "starting the streams failed:"; tail -8 "$WORK/start.log"; exit 3; }
-grep -E "stream" "$WORK/start.log" | cut -c1-160
+log "== client: start (handshake, then the displays)"
+"$APP" client start --host loopback > "$WORK/start.log" 2>&1 || { log "starting the displays failed:"; tail -8 "$WORK/start.log"; exit 3; }
+grep -E "agreed|: on monitor" "$WORK/start.log" | cut -c1-200
 sleep 5
 
 # the three virtual displays, left to right = M1, M2, TV

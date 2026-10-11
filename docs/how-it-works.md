@@ -53,17 +53,33 @@ virtual desktop), and moving past the edge of a window continues on the next mon
 into the laptop's session. Injection needs an **unlocked, awake, non-elevated** session: an elevated window in front, the
 lock screen or UAC prompts block it (that is also why the host keeps the laptop awake).
 
-## Pairing and security
+## Pairing, the handshake and security
 
-- Each instance has its **own certificate**, generated on first start, and **web API credentials** generated per
-  machine (random, kept in `%LOCALAPPDATA%\LANDock\host`); the web UI only answers on the laptop itself.
-- Starting the host creates a **random 4-digit PIN** and a **pairing window** (10 minutes by default). The app hands the
-  PIN to pending pairing requests on all three instances; outside the window nobody new can pair, so a leaked PIN is
-  useless later. Press *New pairing PIN* to open a new window.
-- Paired clients get full permissions (keyboard, mouse, clipboard...). **Treat a paired desktop as fully trusted.**
-- Network: Windows Firewall allows `host\bin\sunshine.exe` on *private* networks only. Nothing is exposed to the
-  internet; do not forward the ports.
-- The app never asks for administrator rights. The one step that needs them (the firewall rule) is a separate prompt.
+The laptop runs a small **control port** (HTTPS, 49900 by default, or the first free port after it) next to its Apollo
+streams. Desktop PCs talk to it first, in three steps:
+
+1. **Check.** `GET /api/identity` (no login) tells the desktop the laptop's host id, its name and the fingerprint of its
+   certificate. The desktop shows the fingerprint; you compare it with the laptop's Host tab. The certificate is made
+   once per laptop and never changes unless you reinstall.
+2. **Pair.** `POST /api/pair` with the 4-digit PIN of the open pairing window returns a **token** for this desktop. The
+   laptop keeps only a hash of the token and lists the desktop by name (*Paired desktops*). The desktop keeps the token
+   encrypted for its Windows user. Moonlight then pairs each display with the same PIN, as before.
+3. **Session.** Every start, `POST /api/session` with the token and the size of the monitor each display goes to. The
+   laptop agrees to each size (at most 3840x2160, 30 or 60 frames per second) and returns the stream port for each
+   display. The desktop saves what was agreed and starts Moonlight with it.
+
+After pairing, reconnecting needs only the token: no PIN. Every connection checks the certificate against the
+fingerprint saved at pairing, so a different laptop at the same address is refused, and a laptop whose certificate
+changed is reported instead of silently trusted.
+
+Other rules that still hold:
+
+- Starting the host creates a **random 4-digit PIN** and a **pairing window** (10 minutes by default). Outside the window
+  nobody new can pair, so a leaked PIN is useless later. Press *New pairing PIN* to open a new window.
+- Paired desktops get full permissions (keyboard, mouse, clipboard...). **Treat a paired desktop as fully trusted.**
+- Windows Firewall allows `hostin\sunshine.exe` (the streams) and `LANDock.exe` (the control port) on *private*
+  networks only. Nothing is exposed to the internet; do not forward the ports.
+- The app never asks for administrator rights. The one step that needs them (the firewall rules) is a separate prompt.
 
 ## Installer and updates
 

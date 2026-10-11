@@ -7,7 +7,7 @@ using LANDock.Update;
 namespace LANDock.Ui;
 
 /// <summary>The settings window: Host, Client, Updates and General/About. Changes are applied with "Save".</summary>
-public sealed class SettingsForm : Form
+public sealed partial class SettingsForm : Form
 {
     private readonly AppServices _app;
     private Settings S => _app.Settings;
@@ -15,19 +15,13 @@ public sealed class SettingsForm : Form
     private readonly System.Windows.Forms.Timer _tick = new() { Interval = 1500 };
 
     // host tab
-    private Label _driverNote = null!, _hostState = null!, _pin = null!, _pinInfo = null!, _addresses = null!, _firewall = null!;
+    private Label _driverNote = null!, _hostState = null!, _pin = null!, _pinInfo = null!, _addresses = null!, _control = null!, _firewall = null!;
     private Button _hostToggle = null!, _newPin = null!, _fwButton = null!;
     private CheckBox _hostAuto = null!, _keepAwake = null!;
     private NumericUpDown _pairMinutes = null!;
     private ListView _instances = null!;
 
     // client tab
-    private TextBox _hostAddress = null!, _clientPin = null!;
-    private ComboBox _displayMode = null!;
-    private DataGridView _streams = null!;
-    private Label _monitors = null!, _clientStatus = null!;
-    private Button _pair = null!, _startStreams = null!, _stopStreams = null!;
-    private CheckBox _autoStreams = null!;
 
     // updates tab
     private CheckBox _updEnabled = null!, _updPre = null!;
@@ -67,7 +61,11 @@ public sealed class SettingsForm : Form
         Controls.Add(buttons);
 
         FormClosing += (_, e) => { if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
-        VisibleChanged += (_, _) => { if (Visible) { LoadSettings(); RefreshAll(); _tick.Start(); } else _tick.Stop(); };
+        VisibleChanged += (_, _) =>
+        {
+            if (Visible) { LoadSettings(); RefreshAll(); _tick.Start(); _meterTimer.Start(); }
+            else { _tick.Stop(); _meterTimer.Stop(); }
+        };
         _tick.Tick += (_, _) => RefreshAll();
         _app.Host.Changed += () => BeginInvokeSafe(RefreshAll);
         _app.Updater.Changed += () => BeginInvokeSafe(RefreshUpdates);
@@ -112,6 +110,10 @@ public sealed class SettingsForm : Form
         _addresses = new Label { AutoSize = true, MaximumSize = new Size(700, 0) };
         col.Controls.Add(Heading("Addresses of this laptop"));
         col.Controls.Add(_addresses);
+        _control = new Label { AutoSize = true, MaximumSize = new Size(700, 0), Margin = new Padding(0, 6, 0, 0) };
+        col.Controls.Add(Heading("Desktop PCs add this laptop with"));
+        col.Controls.Add(_control);
+        col.Controls.Add(Note("Address and control port above, and check that the fingerprint matches the one the desktop shows before it pairs."));
 
         _firewall = new Label { AutoSize = true, Margin = new Padding(0, 8, 12, 0) };
         _fwButton = new Button { Text = "Allow through Windows Firewall…", AutoSize = true, MinimumSize = new Size(200, 28) };
@@ -136,6 +138,8 @@ public sealed class SettingsForm : Form
         _instances.Columns.Add("Display", 120); _instances.Columns.Add("Port", 80); _instances.Columns.Add("State", 160); _instances.Columns.Add("Virtual display", 160);
         col.Controls.Add(Heading("Streams"));
         col.Controls.Add(_instances);
+        BuildListenBox(col);
+        BuildDesktopsBox(col);
 
         page.Controls.Add(col);
         return page;
@@ -158,81 +162,6 @@ public sealed class SettingsForm : Form
             Log.Error("host", ex);
             MessageBox.Show(this, ex.Message, "LANDock host", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
-        RefreshAll();
-    }
-
-    // =================================================================================================================
-    // Client tab
-    // =================================================================================================================
-    private TabPage BuildClientTab()
-    {
-        var page = new TabPage("Client (desktop PC)") { Name = "client", Padding = new Padding(12), AutoScroll = true };
-        var col = Column();
-        col.Controls.Add(Heading("This computer shows the laptop's displays"));
-        col.Controls.Add(Note("Enter the laptop's address, pair once with the PIN shown on the laptop, then start the displays."));
-
-        _hostAddress = new TextBox { Width = 200 };
-        _displayMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
-        _displayMode.Items.AddRange(new object[] { "fullscreen", "windowed" });
-        col.Controls.Add(Row(new Label { Text = "Laptop address:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _hostAddress,
-                             new Label { Text = "Display mode:", AutoSize = true, Margin = new Padding(16, 6, 4, 0) }, _displayMode));
-
-        _clientPin = new TextBox { Width = 70, MaxLength = 4 };
-        _pair = new Button { Text = "Pair", AutoSize = true, MinimumSize = new Size(90, 28) };
-        _pair.Click += async (_, _) => await RunClient(async () =>
-        {
-            SaveSettings(false);
-            var ok = await _app.Client.PairAsync(_clientPin.Text.Trim());
-            MessageBox.Show(this, ok ? "All streams are paired." : "Pairing did not work. Is the host running on the laptop, is the PIN current, and is the laptop's firewall open? See the log on the General tab.",
-                "LANDock pairing", MessageBoxButtons.OK, ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-        });
-        col.Controls.Add(Row(new Label { Text = "Pairing PIN:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _clientPin, _pair));
-
-        _startStreams = new Button { Text = "Start displays", AutoSize = true, MinimumSize = new Size(120, 28) };
-        _stopStreams = new Button { Text = "Stop displays", AutoSize = true, MinimumSize = new Size(120, 28) };
-        _startStreams.Click += async (_, _) => await RunClient(async () => { SaveSettings(false); await _app.Client.StartAsync(); });
-        _stopStreams.Click += async (_, _) => await RunClient(() => _app.Client.StopAsync());
-        _autoStreams = new CheckBox { Text = "Start the displays automatically when LANDock starts", AutoSize = true, Margin = new Padding(16, 6, 0, 0) };
-        col.Controls.Add(Row(_startStreams, _stopStreams, _autoStreams));
-        _clientStatus = new Label { AutoSize = true, MaximumSize = new Size(700, 0) };
-        col.Controls.Add(_clientStatus);
-
-        col.Controls.Add(Heading("Streams (one per virtual display of the laptop, left to right)"));
-        _streams = new DataGridView
-        {
-            Width = 700, Height = 150, AllowUserToAddRows = false, AllowUserToDeleteRows = false, RowHeadersVisible = false,
-            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-        };
-        _streams.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name", HeaderText = "Display", ReadOnly = true, FillWeight = 60 });
-        _streams.Columns.Add(new DataGridViewTextBoxColumn { Name = "Port", HeaderText = "Port", ReadOnly = true, FillWeight = 60 });
-        _streams.Columns.Add(new DataGridViewTextBoxColumn { Name = "Monitor", HeaderText = "On monitor #", FillWeight = 70 });
-        _streams.Columns.Add(new DataGridViewTextBoxColumn { Name = "Resolution", HeaderText = "Resolution", FillWeight = 90 });
-        _streams.Columns.Add(new DataGridViewTextBoxColumn { Name = "Fps", HeaderText = "FPS", FillWeight = 50 });
-        _streams.Columns.Add(new DataGridViewTextBoxColumn { Name = "Bitrate", HeaderText = "Bitrate kbit/s (0 = auto)", FillWeight = 100 });
-        var audio = new DataGridViewComboBoxColumn { Name = "Audio", HeaderText = "Sound", FillWeight = 80 };
-        audio.Items.AddRange("client", "host");
-        _streams.Columns.Add(audio);
-        col.Controls.Add(_streams);
-        col.Controls.Add(Note("Sound: \"client\" plays on this PC, \"host\" stays on the laptop. Monitor numbers count this PC's monitors from the left."));
-
-        _monitors = new Label { AutoSize = true, MaximumSize = new Size(700, 0) };
-        col.Controls.Add(Heading("Monitors of this PC"));
-        col.Controls.Add(_monitors);
-
-        page.Controls.Add(col);
-        return page;
-    }
-
-    private async Task RunClient(Func<Task> work)
-    {
-        foreach (var b in new[] { _pair, _startStreams, _stopStreams }) b.Enabled = false;
-        try { await work(); }
-        catch (Exception ex)
-        {
-            Log.Error("client", ex);
-            MessageBox.Show(this, ex.Message, "LANDock client", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-        foreach (var b in new[] { _pair, _startStreams, _stopStreams }) b.Enabled = true;
         RefreshAll();
     }
 
@@ -316,6 +245,7 @@ public sealed class SettingsForm : Form
         links.Controls.Add(Link("Project page", () => OpenUrl($"https://github.com/{S.Updates.Repository}")));
         links.Controls.Add(Link("Open the data folder", () => OpenUrl(Paths.DataDir)));
         col.Controls.Add(links);
+        BuildSoundBox(col);
         col.Controls.Add(Heading("Log"));
         _logBox = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Width = 700, Height = 300, Font = new Font("Consolas", 9) };
         col.Controls.Add(_logBox);
@@ -338,10 +268,9 @@ public sealed class SettingsForm : Form
     private void LoadSettings()
     {
         _hostAuto.Checked = S.Host.AutoStart; _keepAwake.Checked = S.Host.KeepAwake; _pairMinutes.Value = S.Host.PairingWindowMinutes;
-        _hostAddress.Text = S.Client.HostAddress; _displayMode.SelectedItem = S.Client.DisplayMode; _autoStreams.Checked = S.Client.AutoStartStreams;
-        _streams.Rows.Clear();
-        foreach (var s in S.Client.Streams)
-            _streams.Rows.Add(s.Name, s.Port, s.Monitor, s.Resolution, s.Fps, s.Bitrate, s.Audio == "host" ? "host" : "client");
+        LoadClient();
+        LoadListen();
+        LoadSound();
         _updEnabled.Checked = S.Updates.Enabled; _updInterval.Value = S.Updates.IntervalMinutes;
         _updAsk.Checked = S.Updates.Mode != "auto"; _updAuto.Checked = S.Updates.Mode == "auto";
         _updPre.Checked = S.Updates.IncludePrereleases; _updRepo.Text = S.Updates.Repository; _updToken.Text = S.Updates.Token;
@@ -355,24 +284,14 @@ public sealed class SettingsForm : Form
     public void SaveSettings(bool announce)
     {
         S.Host.AutoStart = _hostAuto.Checked; S.Host.KeepAwake = _keepAwake.Checked; S.Host.PairingWindowMinutes = (int)_pairMinutes.Value;
-        S.Client.HostAddress = _hostAddress.Text.Trim(); S.Client.DisplayMode = _displayMode.SelectedItem as string ?? "fullscreen"; S.Client.AutoStartStreams = _autoStreams.Checked;
-        var streams = new List<StreamSettings>();
-        foreach (DataGridViewRow r in _streams.Rows)
-        {
-            streams.Add(new StreamSettings
-            {
-                Name = $"{r.Cells["Name"].Value}", Port = ToInt(r.Cells["Port"].Value, 0), Monitor = Math.Max(1, ToInt(r.Cells["Monitor"].Value, 1)),
-                Resolution = $"{r.Cells["Resolution"].Value}".Trim(), Fps = ToInt(r.Cells["Fps"].Value, 60), Bitrate = Math.Max(0, ToInt(r.Cells["Bitrate"].Value, 0)),
-                Audio = $"{r.Cells["Audio"].Value}" == "host" ? "host" : "client",
-            });
-        }
-        if (streams.Count > 0) S.Client.Streams = streams;
+        SaveClientFromForm();
         S.Updates.Enabled = _updEnabled.Checked; S.Updates.IntervalMinutes = (int)_updInterval.Value;
         S.Updates.Mode = _updAuto.Checked ? "auto" : "ask"; S.Updates.IncludePrereleases = _updPre.Checked;
         S.Updates.Repository = _updRepo.Text.Trim(); S.Updates.Token = _updToken.Text.Trim();
         S.StartWithWindows = _startWithWindows.Checked;
         S.Save();
         Startup.Apply(S.StartWithWindows);
+        _app.ApplySensing();
         _app.Updater.Start();
         if (announce) MessageBox.Show(this, "Settings saved.", "LANDock", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
@@ -394,6 +313,8 @@ public sealed class SettingsForm : Form
         var left = host.PairingUntil - DateTime.Now;
         _pinInfo.Text = !host.Running ? "Start the host to get a PIN" : left.TotalSeconds > 0 ? $"pairing open for {left:m\\:ss} more" : "pairing window closed (press New pairing PIN)";
         var addrs = HostSetup.LocalAddresses();
+        _control.Text = $"control port {S.Host.ControlPort}" + (S.Host.ControlPort == 0 ? " (chosen when the host starts)" : "") +
+                        (hostInstalled ? $"\ncertificate fingerprint {HostIdentity.Fingerprint()}" : "");
         _addresses.Text = addrs.Count == 0 ? "no network connection found" : string.Join("    ", addrs.Select(a => $"{a.address}  ({a.name})"));
         var fw = hostInstalled && Firewall.RuleExists();
         _firewall.Text = fw ? "Windows Firewall: open for LANDock on Private networks" : "Windows Firewall: not open yet (the desktop PC cannot connect until it is)";
@@ -404,13 +325,9 @@ public sealed class SettingsForm : Form
         foreach (var i in host.Snapshot())
             _instances.Items.Add(new ListViewItem(new[] { i.Label, i.Port.ToString(), i.Up ? "ready" : (host.Running || host.Starting ? "starting" : "stopped"), i.Display ?? "—" }));
         _instances.EndUpdate();
+        RefreshDesktops();
 
-        var clientInstalled = Paths.ClientInstalled;
-        foreach (var c in new Control[] { _pair, _startStreams, _stopStreams, _hostAddress, _clientPin, _displayMode, _streams, _autoStreams }) c.Enabled = clientInstalled;
-        _monitors.Text = string.Join("\n", ClientService.Monitors().Select(m => $"{m.Index}: {m.Bounds.Width}x{m.Bounds.Height} at ({m.Bounds.X},{m.Bounds.Y}){(m.Primary ? "  [primary]" : "")}"));
-        var st = _app.Client.Status();
-        _clientStatus.Text = !clientInstalled ? "The client component is not installed on this computer"
-            : string.Join("    ", st.Select(s => s.Running ? $"{s.Name}: running on monitor {s.Monitor}" : $"{s.Name}: not running"));
+        RefreshClient();
         RefreshUpdates();
     }
 

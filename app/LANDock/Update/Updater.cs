@@ -224,9 +224,10 @@ public sealed class Updater
                         if (wasHostRunning) { Say("restarting the host"); await _host.StartAsync(); }
                         break;
                     case "client":
-                        var wasStreaming = _client.AnyRunning();
-                        await ReplaceComponentAsync(zip, Paths.ClientDir, async () => { if (wasStreaming) await _client.StopAsync(); });
-                        if (wasStreaming) { Say("restarting the streams"); await _client.StartAsync(); }
+                        var streaming = _settings.Client.Hosts.Where(_client.IsRunning).ToList();
+                        await ReplaceComponentAsync(zip, Paths.ClientDir, async () => { foreach (var h in streaming) await _client.StopAsync(h); });
+                        if (streaming.Count > 0) Say("restarting the streams");
+                        foreach (var h in streaming) await _client.StartAsync(h);
                         break;
                     case "app":
                         await ReplaceProgramAsync(zip, u.To, wasHostRunning, Say);
@@ -268,7 +269,11 @@ public sealed class Updater
         if (!File.Exists(fresh)) throw new FileNotFoundException("the update archive has no " + Path.GetFileName(exe));
 
         if (_host.Running) await _host.StopAsync();
-        if (_client.AnyRunning()) { File.WriteAllText(Path.Combine(Paths.DataDir, "resume-streams"), ""); await _client.StopAsync(); }
+        if (_client.AnyRunning())
+        {
+            File.WriteAllText(Path.Combine(Paths.DataDir, "resume-streams"), "");
+            foreach (var h in _settings.Client.Hosts.Where(_client.IsRunning)) await _client.StopAsync(h);
+        }
         if (resumeHost) File.WriteAllText(Path.Combine(Paths.DataDir, "resume-host"), "");
 
         var old = exe + ".old";

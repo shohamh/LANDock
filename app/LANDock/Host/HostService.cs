@@ -2,6 +2,9 @@ using System.Diagnostics;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using LANDock.Core;
+using LANDock.Discovery;
+using LANDock.Ultrasound;
+using LANDock.Update;
 
 namespace LANDock.Host;
 
@@ -21,6 +24,12 @@ public sealed class HostService : IDisposable
     private CancellationTokenSource? _cts;
     private Thread? _awakeThread;
     private Task? _supervisor, _acceptor, _layout;
+    private ControlServer? _control;
+    private readonly LanAdvertiser _advertiser = new();
+    /// <summary>The desktop whose pairing is in progress: its Moonlight pairings are named after it (so Forget can find them).</summary>
+    private string? _pairingName;
+    /// <summary>The size each display was last agreed at (by name), so the laptop knows what each stream is serving.</summary>
+    private readonly Dictionary<string, StreamAgreement> _agreed = new(StringComparer.OrdinalIgnoreCase);
 
     public HostService(Settings settings) => _settings = settings;
 
@@ -68,7 +77,22 @@ public sealed class HostService : IDisposable
 
             Pin = HostPlanning.NewPin();
             PairingUntil = DateTime.Now.AddMinutes(_settings.Host.PairingWindowMinutes);
+            var port = ControlServer.ChoosePort(_settings.Host.ControlPort);
+            if (port != _settings.Host.ControlPort) { _settings.Host.ControlPort = port; _settings.Save(); }
+            _control = new ControlServer(this);
+            await _control.StartAsync(port, ct);
+
+            await ApplyPendingForgetsAsync(ct);
             Running = true;
+            _advertiser.Start(BuildAdvert());
+            _ = Task.Run(async () =>
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    try { await Task.Delay(TimeSpan.FromSeconds(3), ct); } catch { return; }
+                    try { _advertiser.Update(BuildAdvert()); } catch (Exception ex) { Log.Error("advert", ex); }
+                }
+            }, ct);
             _acceptor = Task.Run(() => Accept(ct));
             _layout = Task.Run(() => WatchLayout(ct));
             Log.Info($"host ready; new desktop PCs can pair for the next {_settings.Host.PairingWindowMinutes} minutes");
@@ -111,6 +135,9 @@ public sealed class HostService : IDisposable
         }
 
         cts?.Cancel();
+        _advertiser.Stop();
+        if (_control != null) { await _control.StopAsync(); _control = null; }
+        _agreed.Clear();
         try { await Task.WhenAll(new[] { _supervisor, _acceptor, _layout }.Where(t => t != null)!.Select(t => t!.WaitAsync(TimeSpan.FromSeconds(8)))); }
         catch { }
 
@@ -126,6 +153,133 @@ public sealed class HostService : IDisposable
         Log.Info("host stopped");
         Raise();
     }
+
+    // ---- the handshake (see ControlServer) -------------------------------------------------------------------------
+
+    public ControlIdentity Identity() => new(HostIdentity.HostId(), Environment.MachineName, AppInfo.Version,
+        HostIdentity.Fingerprint(), PairingOpen, _settings.Host.ControlPort);
+
+    /// <summary>Pairs a desktop with the PIN of the current pairing window. Returns the token the desktop keeps.</summary>
+    public (bool ok, string? token, string? reason) Pair(string? pin, string? client, string? ultraId = null)
+    {
+        if (!Running) return (false, null, "the host is not running");
+        if (!PairingOpen) return (false, null, "pairing is closed on the laptop: press New pairing PIN there");
+        if (string.IsNullOrEmpty(pin) || pin != Pin) return (false, null, "wrong PIN");
+        var name = string.IsNullOrWhiteSpace(client) ? "desktop" : client.Trim();
+        _pairingName = name;
+        var token = HostIdentity.Issue(name, ultraId ?? "");
+        Log.Info($"desktop '{name}' paired over the control port");
+        Raise();
+        return (true, token, null);
+    }
+
+    public bool IsPaired(string token) => Running && HostIdentity.IsKnown(token);
+
+    /// <summary>What the LAN is told: who this laptop is, its control port, pairing state, and the paired desktops it heard
+    /// through ultrasound in the last minute (their id, how loud, how long ago).</summary>
+    public Advert BuildAdvert()
+    {
+        var now = DateTime.Now;
+        var heard = new List<(string id, double db, double ageSeconds)>();
+        foreach (var d in HostIdentity.Desktops())
+        {
+            if (string.IsNullOrEmpty(d.UltraId) || Heard.Last(d.UltraId) is not { } h) continue;
+            var age = (now - h.at).TotalSeconds;
+            if (age <= 60) heard.Add((d.UltraId, h.db, age));
+        }
+        return new Advert(HostIdentity.HostId(), Environment.MachineName, AppInfo.Version, _settings.Host.ControlPort,
+            PairingOpen ? "open" : "closed", heard);
+    }
+
+    /// <summary>
+    /// Forgets a desktop: its token stops working, and its Moonlight pairings on every stream are removed (so it cannot stream
+    /// either). Moonlight pairings can only be removed while the host runs; otherwise they go when the host next starts with the
+    /// desktop forgotten.
+    /// </summary>
+    public async Task<int> ForgetDesktopAsync(string name, CancellationToken ct = default)
+    {
+        HostIdentity.Forget(name);
+        var removed = 0;
+        if (Running) removed = await UnpairNamedAsync(name, ct);
+        else
+        {
+            // the Moonlight pairings are removed when the host next starts (see StartAsync)
+            Directory.CreateDirectory(Paths.HostState);
+            File.AppendAllText(PendingForgetFile, name + Environment.NewLine);
+        }
+        Log.Info($"forgot desktop '{name}': token revoked" + (Running ? $", {removed} Moonlight pairing(s) removed" : ", Moonlight pairings follow at the next start"));
+        Raise();
+        return removed;
+    }
+
+    private static string PendingForgetFile => Path.Combine(Paths.HostState, "pending-forget.txt");
+
+    /// <summary>Removes the Moonlight pairings that were made by a desktop, on every stream.</summary>
+    private async Task<int> UnpairNamedAsync(string name, CancellationToken ct)
+    {
+        var removed = 0;
+        foreach (var inst in HostPlanning.Instances)
+        {
+            using var api = new ApolloApi(inst.Port);
+            try
+            {
+                foreach (var c in await api.ListClientsAsync(ct))
+                    if (c.name.Equals(name, StringComparison.OrdinalIgnoreCase)) { await api.UnpairAsync(c.uuid, ct); removed++; }
+            }
+            catch (Exception ex) { Log.Error($"forget {name} on {inst.Label}", ex); }
+        }
+        return removed;
+    }
+
+    /// <summary>Applies the forgets that were made while the host was not running.</summary>
+    private async Task ApplyPendingForgetsAsync(CancellationToken ct)
+    {
+        if (!File.Exists(PendingForgetFile)) return;
+        var names = File.ReadAllLines(PendingForgetFile).Where(n => n.Trim() != "").Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        foreach (var n in names) Log.Info($"removing the Moonlight pairings of forgotten desktop '{n}': {await UnpairNamedAsync(n, ct)} removed");
+        File.Delete(PendingForgetFile);
+    }
+
+    /// <summary>The streams this host serves: name and the Moonlight port for each.</summary>
+    public List<StreamAgreement> StreamList() =>
+        HostPlanning.Instances.Select(i => new StreamAgreement(i.Label, i.Port, 0, 0, 0)).ToList();
+
+    /// <summary>
+    /// Agrees the size of each requested display. The desktop asks for the size of the monitor it shows the display on; the
+    /// host keeps it inside what it can serve (at most 4K, 30 or 60 frames per second). An empty request just lists the streams.
+    /// </summary>
+    /// <summary>
+    /// Agrees the size of each requested display for the desktop that holds this token. The desktop's choices for its displays
+    /// apply: a display that is off for it is left out (not an error), and the size is kept within its largest size and frame rate.
+    /// </summary>
+    public (bool ok, List<StreamAgreement> agreed, string? reason) Agree(List<StreamOffer> offers, string token)
+    {
+        if (offers.Count == 0) return (true, StreamList(), null);
+        var choices = HostIdentity.DisplaysOfToken(token);
+        var res = new List<StreamAgreement>();
+        foreach (var o in offers)
+        {
+            var inst = HostPlanning.Instances.FirstOrDefault(i => i.Label.Equals(o.Name, StringComparison.OrdinalIgnoreCase));
+            if (inst == null) return (false, new(), $"unknown display '{o.Name}'");
+            var policy = DisplayPolicies.For(choices, inst.Label);
+            if (!policy.Enabled)
+            {
+                Log.Info($"display {inst.Label}: off for this desktop, not offered");
+                continue;
+            }
+            var w = Math.Min(Math.Max(o.Width, 640), policy.MaxWidth) & ~1;
+            var h = Math.Min(Math.Max(o.Height, 480), policy.MaxHeight) & ~1;
+            var fps = o.Fps >= 45 && policy.MaxFps >= 60 ? 60 : 30;
+            var a = new StreamAgreement(inst.Label, inst.Port, w, h, fps);
+            _agreed[inst.Label] = a;
+            res.Add(a);
+            Log.Info($"display {inst.Label}: agreed {w}x{h} at {fps} fps (port {inst.Port})");
+        }
+        return (true, res, null);
+    }
+
+    /// <summary>The last size agreed for each display (for the Host tab).</summary>
+    public IReadOnlyDictionary<string, StreamAgreement> Agreed => _agreed;
 
     // ---- state for the UI and the updater -----------------------------------------------------------------------------
 
@@ -208,7 +362,7 @@ public sealed class HostService : IDisposable
                     var pin = Pin;
                     await Task.WhenAll(apis.Select(async kv =>
                     {
-                        try { await kv.Value.SubmitPinAsync(pin, $"desktop-{kv.Key}", ct); } catch { }   // none pending, or the instance is not up yet
+                        try { await kv.Value.SubmitPinAsync(pin, _pairingName ?? $"desktop-{kv.Key}", ct); } catch { }   // none pending, or the instance is not up yet
                     }));
                     if (ct.IsCancellationRequested) return;
                 }

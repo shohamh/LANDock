@@ -39,18 +39,15 @@ The installer and the programs are not code-signed yet, so Windows SmartScreen m
 
 ## Use
 
-1. **Laptop:** click the LANDock tray icon > *Start host*. The Host tab shows a 4-digit **pairing PIN** and the laptop's
-   network address.
-2. **Desktop PC:** open the LANDock settings > *Client*. Enter the laptop's address, the PIN, press *Pair* (once per
-   desktop PC). Check the monitor numbers in the table, then press *Start displays*.
-3. Each laptop display now fills a monitor of the desktop. Click once in a window to give it the keyboard.
-   *Stop displays* ends the streams and removes the virtual displays.
+1. **Laptop:** click the LANDock tray icon > *Start host*. The Host tab shows the **control port** (49900 unless it is taken), the **certificate fingerprint**, and a 4-digit **pairing PIN**.
+2. **Desktop PC:** open the LANDock settings > *Client* > *Add host…*. Enter the laptop's address and the control port, press *Check host*, and compare the fingerprint with the one on the laptop's Host tab. Enter the PIN and press *Pair*.
+3. Choose the monitor for each display in the table, then press *Start displays*. The laptop and the desktop agree on each display's size first (the size of its monitor, at most 4K), then the windows appear.
 
-New desktop PCs can only pair while the pairing window is open (10 minutes after the host starts, or after *New
-pairing PIN*). Paired desktops are fully trusted: they control the laptop.
+Next time, just press *Start displays*: the desktop reconnects with the token it saved, so no PIN is needed. A new PIN is only needed if the laptop forgot this PC (remove it from the list on the laptop's side) or the laptop's certificate changed (LANDock refuses to connect and says so).
 
-Command line (for scripts): `LANDock host up`, `LANDock client pair --pin 1234`, `LANDock client start`,
-`LANDock client status`, `LANDock update check`. Run `LANDock help` for the list.
+New desktop PCs can only pair while the pairing window is open (10 minutes after the host starts, or after *New pairing PIN*). Paired desktops are fully trusted: they control the laptop.
+
+Command line (for scripts): `LANDock host up`, `LANDock client check 10.0.0.20`, `LANDock client add-host 10.0.0.20 --pin 1234 --trust`, `LANDock client start --host NAME`, `LANDock client status`, `LANDock update check`. Run `LANDock help` for the list.
 
 ## Updates
 

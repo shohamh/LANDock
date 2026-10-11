@@ -4,6 +4,42 @@ All notable changes to LANDock. The format follows [Keep a Changelog](https://ke
 project uses [Semantic Versioning](https://semver.org/). Releases are cut with `scripts/release.sh`; the section for
 a version becomes the text of its GitHub release.
 
+## [0.2.0] - 2026-10-11
+
+### Added
+- **Pairing from the settings window**: *Add host…* takes a laptop's address and control port, checks it, shows its name
+  and certificate fingerprint, and pairs with the PIN. Saved hosts keep their address, token, streams and monitor choices.
+- **Handshake at the start of every connection**: the desktop asks for each display at the size of the monitor it goes to,
+  and the laptop agrees to a size and returns the stream port. The result is saved.
+- **Quick reconnect**: after pairing, *Start displays* connects with the saved token; no PIN is needed.
+- **Display choices per desktop** (Host tab): for each paired desktop, turn each virtual display on or off, and set the
+  largest size (720p to 4K) and frame rate (30 or 60) it may use. The choices are saved with the desktop and apply at its
+  next connection; the last size agreed with it is shown next to them.
+- **Control port on the laptop**: HTTPS, chosen automatically from 49900 (kept after that), with its certificate fingerprint
+  shown on the Host tab. The firewall step now also allows `LANDock.exe`.
+- Command line: `client check`, `client add-host`, `client hosts`, `client assign`, `client remove-host`; `--host` on the other client commands.
+
+- **Finding laptops**: LAN discovery over mDNS (DNS-SD `_landock._tcp`, Makaretu.Dns, MIT). The laptop advertises its name,
+  control port and pairing state, and what it heard; the desktop lists the laptops it finds.
+- **Ultrasound identification** with [ggwave](https://github.com/ggerganov/ggwave) (MIT, built from a pinned commit by
+  `scripts/build-ggwave.sh`): each desktop has an id, plays it as ultrasound when *Let laptops hear this PC by sound* is on,
+  and the laptop that hears it reports it (it stays off until *Listen on the microphone* is turned on).
+- **Microphone bars**: the laptop's Host tab shows the level of the microphone in the ultrasound band (15 to 19.5 kHz),
+  one bar per frequency, so you can see whether the sound is picked up.
+- **Ordered list of laptops** (Client tab): nearby (heard this PC) first, then recency, favorites, and the order set with
+  Move up / Move down; auto-connect to the first paired laptop that is online (setting).
+- `LANDock ultrasound test [seconds] [Hz]`: plays a tone or this PC's id and prints the microphone and speaker levels.
+- **Audible mode** (the default): the desktop id is a short ggwave chirp (1.9 to 6.4 kHz) that everyone hears, announced
+  every 45 to 60 s. **Ultrasound mode** (15 to 19.5 kHz, inaudible) stays available: General tab > Sound > Mode.
+- **Pets**: the audible chirp is loud and ultrasound is heard by dogs and cats. Both sound features are off by default; keep
+  them off near pets.
+- **Sound devices**: General tab > Sound: pick the microphone (laptop) and the speakers (desktop), or leave them on
+  automatic (which avoids virtual devices). The choices are saved in the settings file and applied at once.
+
+### Changed
+- The desktop's settings hold a list of hosts instead of one laptop address. Settings written by 0.1.0 are not migrated:
+  add the laptop again.
+
 ## [0.1.0] - 2026-10-10
 
 First release. Experimental: tested on a single laptop (host and client on the same machine over loopback); the first
