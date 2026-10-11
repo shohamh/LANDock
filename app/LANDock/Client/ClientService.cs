@@ -282,7 +282,8 @@ public sealed class ClientService
         try
         {
             using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
-            agreed = await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId, ScreenReport(chosen.Select(s => s.Monitor)));
+            // every screen the user has set up for this laptop, not only the ones started now: the laptop lays out all of them
+            agreed = await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId, ScreenReport(h.Streams.Select(s => s.Monitor)));
         }
         catch (ControlException e) when (e.Status == 401)
         {
