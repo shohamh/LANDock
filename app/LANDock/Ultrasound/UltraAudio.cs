@@ -230,7 +230,7 @@ public sealed class UltraAnnouncer : IDisposable
 
             _cts = new CancellationTokenSource();
             var ct = _cts.Token;
-            var tx = _tx;
+            var tx = _tx ?? throw new InvalidOperationException("the ultrasound encoder is not loaded");
             var queue = _queue;
             var protocol = SoundMode.Protocol(mode);
             var volume = SoundMode.Volume(mode);

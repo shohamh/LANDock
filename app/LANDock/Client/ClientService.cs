@@ -270,7 +270,7 @@ public sealed class ClientService
         foreach (var s in all)
         {
             EnsureStream(h, s);
-            if (await PairOneAsync(h, s, pin)) Log.Info($"{h.Name} {s.Name}: paired");
+            if (await PairOneAsync(h, s, pin!)) Log.Info($"{h.Name} {s.Name}: paired");
             else bad++;
         }
         if (bad > 0) Log.Info($"{h.Name}: {bad} display(s) not paired with Moonlight; pair again with the PIN shown on the laptop");
