@@ -46,6 +46,14 @@ public class E2ETests
 
     private void Step(string what) => _out.WriteLine($"[{DateTime.Now:HH:mm:ss}] {what}");
 
+    /// <summary>A diagnostic line in build/e2e-trace.log. The console of a test run is not shown by "dotnet test", so the details of
+    /// the window and dialog lookups are kept in this file.</summary>
+    private static void Trace(string line)
+    {
+        try { File.AppendAllText(Path.Combine(Root, "build", "e2e-trace.log"), $"[{DateTime.Now:HH:mm:ss.fff}] {line}{Environment.NewLine}"); }
+        catch { }
+    }
+
     /// <summary>A screenshot of the screen, saved for a failed run (to see what the windows showed).</summary>
     private void Snap(string name)
     {
@@ -102,10 +110,21 @@ public class E2ETests
         var button = Need(w, name).AsButton();
         if (!Retry.WhileFalse(() => Tolerant(() => button.IsEnabled, false), TimeSpan.FromSeconds(20)).Result)
             throw new InvalidOperationException($"the button '{name}' stayed disabled");
-        // the handler of this button waits for a question box: the Invoke call is made on its own thread, and the test goes on
-        if (name is "Forget selected desktop" or "Start displays" or "Pair…")
+        // Pair… opens a dialog from its handler: an Invoke call would stay open for as long as the dialog is up, and every other
+        // UI Automation call to the window would time out. The keyboard presses the focused button instead (Space).
+        if (name == "Pair…")
         {
-            _ = Task.Run(() => Tolerant(() => { button.Invoke(); return true; }, false));
+            ClickButtonWindow(w, name);
+            return;
+        }
+        // the handler of this button waits for a question box: the Invoke call is made on its own thread, and the test goes on
+        if (name is "Forget selected desktop" or "Start displays")
+        {
+            _ = Task.Run(() =>
+            {
+                try { button.Invoke(); Trace($"invoked '{name}'"); }
+                catch (Exception ex) { Trace($"invoke '{name}' failed: {ex.GetType().Name} {ex.Message}"); }
+            });
             return;
         }
         if (OpensDialog.Contains(name))
@@ -114,6 +133,65 @@ public class E2ETests
             button.Click();
         }
         else button.Invoke();
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc callback, IntPtr lParam);
+
+    private const uint BM_CLICK = 0x00F5, WM_CHAR = 0x0102;
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
+
+    /// <summary>Types text into the lowest text box of a dialog, by sending the characters to that box's own window (no focus needed,
+    /// and the box sees ordinary keystrokes, so its changed-text handling runs).</summary>
+    private static void TypeIntoLowestEdit(string dialogTitle, string text)
+    {
+        var dialog = IntPtr.Zero;
+        EnumWindows((h, _) =>
+        {
+            if (!IsWindowVisible(h)) return true;
+            var t = new System.Text.StringBuilder(256); GetWindowText(h, t, t.Capacity);
+            if (t.ToString() == dialogTitle) dialog = h;
+            return dialog == IntPtr.Zero;
+        }, IntPtr.Zero);
+        if (dialog == IntPtr.Zero) throw new InvalidOperationException($"no window '{dialogTitle}'");
+        var edits = new List<(IntPtr h, int top)>();
+        EnumChildWindows(dialog, (child, _) =>
+        {
+            var cls = new System.Text.StringBuilder(128); GetClassName(child, cls, cls.Capacity);
+            if (cls.ToString().Contains("Edit", StringComparison.OrdinalIgnoreCase)) { GetWindowRect(child, out var r); edits.Add((child, r.Top)); }
+            return true;
+        }, IntPtr.Zero);
+        var box = edits.OrderBy(e => e.top).Last().h;
+        foreach (var c in text) PostMessage(box, WM_CHAR, (IntPtr)c, IntPtr.Zero);
+    }
+
+    /// <summary>Clicks a button by its window: the button's own window gets a click message. It needs no focus, and it does not go
+    /// through UI Automation, whose Invoke call would stay open while the handler opens a dialog.</summary>
+    private static void ClickButtonWindow(Window w, string text)
+    {
+        // the window that has the button: the only visible window with this button is the one of the settings being tested
+        var button = Retry.WhileNull(() =>
+        {
+            IntPtr found = IntPtr.Zero;
+            EnumWindows((top, _) =>
+            {
+                if (!IsWindowVisible(top)) return true;
+                EnumChildWindows(top, (child, _) =>
+                {
+                    var t = new System.Text.StringBuilder(128); GetWindowText(child, t, t.Capacity);
+                    if (t.ToString() == text) found = child;
+                    return true;
+                }, IntPtr.Zero);
+                return found == IntPtr.Zero;
+            }, IntPtr.Zero);
+            return found == IntPtr.Zero ? (IntPtr?)null : found;
+        }, TimeSpan.FromSeconds(20)).Result ?? throw new InvalidOperationException($"no button '{text}' in the window");
+        PostMessage(button, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
     }
 
     /// <summary>The names of the text controls under an element. A window that is changing can refuse to answer for a moment: such
@@ -175,10 +253,11 @@ public class E2ETests
                 if (text.ToString() == title) handles.Add(h);
                 return true;
             }, IntPtr.Zero);
+            Trace($"dialog '{title}': {handles.Count} matching window(s)");
             foreach (var h in handles)
             {
                 try { return a.FromHandle(h).AsWindow(); }
-                catch (Exception ex) { Console.WriteLine($"dialog {title} ({h}): {ex.GetType().Name}"); }
+                catch (Exception ex) { Trace($"dialog {title} ({h}): {ex.GetType().Name} {ex.Message}"); }
             }
             return null;
         }, TimeSpan.FromSeconds(seconds)).Result;
@@ -265,10 +344,18 @@ public class E2ETests
             foreach (var ini in Directory.GetFiles(streams, "Moonlight.ini", SearchOption.AllDirectories)) File.Delete(ini);
     }
 
+    /// <summary>The app's log so far. The app is still writing to it, so it is opened for shared reading (a plain read fails while the app writes).</summary>
     private static string ReadLog(string dataDir)
     {
         var p = Path.Combine(dataDir, "logs", "landock.log");
-        return File.Exists(p) ? File.ReadAllText(p) : "";
+        if (!File.Exists(p)) return "";
+        try
+        {
+            using var fs = new FileStream(p, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(fs);
+            return reader.ReadToEnd();
+        }
+        catch (IOException) { return ""; }
     }
 
     private static JsonNode Settings(string dataDir) =>
@@ -307,9 +394,9 @@ public class E2ETests
         foreach (var h in handles)
         {
             try { windows.Add(a.FromHandle(h).AsWindow()); }
-            catch (Exception ex) { Console.WriteLine($"window {h} (pid {pid}): {ex.GetType().Name} {ex.Message}"); }
+            catch (Exception ex) { Trace($"window {h} (pid {pid}): {ex.GetType().Name} {ex.Message}"); }
         }
-        Console.WriteLine($"pid {pid}: {handles.Count} visible windows, {windows.Count} automated");
+        Trace($"pid {pid}: {handles.Count} visible windows, {windows.Count} automated");
         return windows;
     }
 
@@ -395,6 +482,7 @@ public class E2ETests
             // ---- the desktop: the laptop is found on the LAN by itself -----------------------------------------------
             Step("desktop: open the Client tab; the laptop must be found on the LAN without any setup");
             desktop = Launch(DesktopData, "client");
+            _out.WriteLine($"desktop process {desktop.ProcessId}, exited {desktop.HasExited}");
             var dw = MainWindow(desktop, a);
             Tab(dw, "Client (desktop PC)");
             Assert.NotNull(WaitText(dw, @"LAN: [1-9]\d* laptop\(s\) found", 90));
@@ -419,15 +507,31 @@ public class E2ETests
                 _out.WriteLine("windows of the desktop: " + string.Join(" | ", WindowsOf(desktop, a).Select(w => w.Title)));
             }
             add ??= Dialog(desktop, a, "Add a host", 60);
-            if (add == null) Snap("no-add-dialog");
+            if (add == null)
+            {
+                var seen = new List<string>();
+                EnumWindows((h, _) =>
+                {
+                    GetWindowThreadProcessId(h, out var owner);
+                    if (owner != (uint)desktop.ProcessId) return true;
+                    var cls = new System.Text.StringBuilder(64); GetClassName(h, cls, cls.Capacity);
+                    var txt = new System.Text.StringBuilder(256); GetWindowText(h, txt, txt.Capacity);
+                    seen.Add($"{cls}/'{txt}'/visible={IsWindowVisible(h)}");
+                    return true;
+                }, IntPtr.Zero);
+                _out.WriteLine("desktop windows: " + string.Join(" | ", seen));
+                Snap("no-add-dialog");
+            }
             Assert.NotNull(add);
             Press(add!, "Check host");
             var found = Retry.WhileNull(() => add!.FindAllDescendants(cf => cf.ByControlType(ControlType.Text))
                 .Select(e => e.Name).FirstOrDefault(n => n != null && n.StartsWith("Found:")), TimeSpan.FromSeconds(30)).Result;
             Assert.NotNull(found);
             Assert.Contains("SHOHAM", found);
-            var pinBox = add!.FindAllDescendants(cf => cf.ByControlType(ControlType.Edit)).Last().AsTextBox();
-            pinBox.Enter(pin!);
+            // the PIN box is the lowest text box of the dialog (the order of the controls in the tree is not their order on screen)
+            var pinBox = add!.FindAllDescendants(cf => cf.ByControlType(ControlType.Edit)).OrderBy(e => e.BoundingRectangle.Top).Last().AsTextBox();
+            TypeIntoLowestEdit("Add a host", pin!);
+            Trace($"pin typed; the box reads '{pinBox.Text}'");
             Press(add!, "Pair");
 
             var pairing = Dialog(desktop, a, "LANDock pairing", 300);

@@ -264,7 +264,7 @@ public sealed class HostService : IDisposable
         {
             var inst = HostPlanning.AllInstances.FirstOrDefault(i => i.Label.Equals(o.Name, StringComparison.OrdinalIgnoreCase));
             if (inst == null) return (false, new(), $"unknown display '{o.Name}'");
-            var policy = DisplayPolicies.For(choices, inst.Label);
+            var policy = DisplayPolicies.Choose(choices, o.ScreenId, inst.Label);
             if (!policy.Enabled)
             {
                 Log.Info($"display {inst.Label}: off for this desktop, not offered");
@@ -285,6 +285,13 @@ public sealed class HostService : IDisposable
     /// <summary>The last size agreed for each display (for the Host tab).</summary>
     public IReadOnlyDictionary<string, StreamAgreement> Agreed => _agreed;
 
+    /// <summary>The last size agreed for the display that shows this desktop screen (null when no display shows it).</summary>
+    public StreamAgreement? AgreedOn(string screenId)
+    {
+        var label = _displayScreen.FirstOrDefault(kv => kv.Value.Equals(screenId, StringComparison.OrdinalIgnoreCase)).Key;
+        return label != null && _agreed.TryGetValue(label, out var a) ? a : null;
+    }
+
     private readonly Dictionary<string, IReadOnlyList<MonitorOffer>> _desktopScreens = new();
     private readonly Dictionary<string, string> _displayScreen = new(StringComparer.OrdinalIgnoreCase);
     private volatile IReadOnlyList<MonitorOffer>? _latestScreens;
@@ -296,6 +303,7 @@ public sealed class HostService : IDisposable
         if (monitors == null || token == "") return;
         _desktopScreens[token] = monitors;
         _latestScreens = monitors;
+        HostIdentity.SetScreens(token, monitors);
         Log.Info($"a desktop reported {monitors.Count} screen(s): " + string.Join(", ", monitors.Select(m => $"{m.Id} {m.Width}x{m.Height} at {m.X},{m.Y} rotation {m.Rotation}")));
     }
 

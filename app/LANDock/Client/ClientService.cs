@@ -30,6 +30,17 @@ public sealed class ClientService
             .Select(s => new MonitorInfo(++i, s.DeviceName, s.Bounds, s.Primary)).ToList();
     }
 
+    /// <summary>What the handshake asks for each display: the size of the monitor it is shown on, its frame rate, and the screen.</summary>
+    private static List<DisplayOffer> OffersFor(IEnumerable<StreamSettings> chosen)
+    {
+        var mons = Monitors();
+        return chosen.Select(s =>
+        {
+            var m = mons.FirstOrDefault(x => x.Index == s.Monitor) ?? mons.First();
+            return new DisplayOffer(s.Name, m.Bounds.Width, m.Bounds.Height, s.Fps, m.Name);
+        }).ToList();
+    }
+
     /// <summary>The screens that the given monitors are, as the handshake reports them (plan-monitor-layout.md, step 1). Only the
     /// screens the streams use are reported: the user extends to those.</summary>
     public static List<LANDock.Host.MonitorOffer> ScreenReport(IEnumerable<int> monitorIndexes)
@@ -186,8 +197,21 @@ public sealed class ClientService
         _settings.Save();
         Log.Info($"{h.Name}: the host accepted this PC; {reply.Streams.Count} display(s) offered");
 
+        // the handshake starts the displays this PC uses (a display the laptop does not run yet is started now), so that each
+        // one listens and can be paired with Moonlight
+        var enabled = Selected(h, null).ToList();
+        if (enabled.Count > 0)
+        {
+            try
+            {
+                using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
+                await c.SessionAsync(h.Token, OffersFor(enabled), _settings.Client.UltrasoundId, ScreenReport(h.Streams.Where(s => s.Enabled).Select(s => s.Monitor)));
+            }
+            catch (ControlException e) { Log.Error($"{h.Name}: the displays could not be started: {e.Message}", null); }
+        }
+
         var bad = 0;
-        foreach (var s in Selected(h, null))
+        foreach (var s in enabled)
         {
             EnsureStream(h, s);
             if (await PairOneAsync(h, s, pin)) Log.Info($"{h.Name} {s.Name}: paired");
@@ -221,8 +245,26 @@ public sealed class ClientService
     /// as soon as the last step went through and the laptop lists the stream's app, the pairing is done and Moonlight is ended.
     /// A pairing can fail by timing (the PIN arrived late), so it is tried up to three times.
     /// </summary>
+    /// <summary>True when something listens on the port (a short connect attempt).</summary>
+    private static async Task<bool> PortAnswersAsync(string address, int port)
+    {
+        try
+        {
+            using var tcp = new System.Net.Sockets.TcpClient();
+            var connect = tcp.ConnectAsync(address, port);
+            return await Task.WhenAny(connect, Task.Delay(2000)) == connect && tcp.Connected;
+        }
+        catch { return false; }
+    }
+
     private async Task<bool> PairOneAsync(HostProfile h, StreamSettings s, string pin)
     {
+        // a display whose port does not answer cannot be paired: say so at once instead of waiting for Moonlight to time out
+        if (!await PortAnswersAsync(h.Address, s.Port))
+        {
+            Log.Info($"{h.Name} {s.Name}: the laptop does not run this display (port {s.Port} does not answer); start the displays, then pair");
+            return false;
+        }
         for (var attempt = 1; attempt <= 3; attempt++)
         {
             if (await CanListAsync(h, s)) { if (attempt == 1) Log.Info($"{h.Name} {s.Name}: already paired and reachable"); return true; }
@@ -273,12 +315,7 @@ public sealed class ClientService
         var chosen = Selected(h, only).ToList();
         if (chosen.Count == 0) throw new InvalidOperationException($"{h.Name} has no displays (check the connection first)");
 
-        var mons = Monitors();
-        var offers = chosen.Select(s =>
-        {
-            var m = mons.FirstOrDefault(x => x.Index == s.Monitor) ?? mons.First();
-            return new DisplayOffer(s.Name, m.Bounds.Width, m.Bounds.Height, s.Fps, m.Name);
-        }).ToList();
+        var offers = OffersFor(chosen);
 
         List<RemoteStream> agreed;
         try
@@ -309,6 +346,7 @@ public sealed class ClientService
             throw new InvalidOperationException($"{h.Name} offers no display to this PC: turn one on in the laptop's Host tab (Displays for this desktop)");
 
         var allOk = true;
+        var mons = Monitors();
         foreach (var s in chosen)
         {
             var procs = StreamProcesses(h, s);

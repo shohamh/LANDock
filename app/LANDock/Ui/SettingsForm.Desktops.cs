@@ -34,13 +34,13 @@ public sealed partial class SettingsForm
         col.Controls.Add(Row(_forget));
         col.Controls.Add(_desktopsNote);
 
-        col.Controls.Add(Heading("How the virtual displays work for the selected desktop"));
+        col.Controls.Add(Heading("How the virtual displays work for each screen of the selected desktop"));
         _policy = new DataGridView
         {
             Width = 700, Height = 140, AllowUserToAddRows = false, AllowUserToDeleteRows = false, RowHeadersVisible = false,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         };
-        _policy.Columns.Add(new DataGridViewTextBoxColumn { Name = "Display", HeaderText = "Display", ReadOnly = true, FillWeight = 40 });
+        _policy.Columns.Add(new DataGridViewTextBoxColumn { Name = "Display", HeaderText = "Screen of the desktop", ReadOnly = true, FillWeight = 40 });
         _policy.Columns.Add(new DataGridViewCheckBoxColumn { Name = "On", HeaderText = "On for this desktop", FillWeight = 60 });
         var size = new DataGridViewComboBoxColumn { Name = "Size", HeaderText = "Largest size", FillWeight = 110 };
         foreach (var s in DisplayPolicies.Sizes) size.Items.Add(s.label);
@@ -68,19 +68,27 @@ public sealed partial class SettingsForm
         _savePolicy.Enabled = name != null;
         if (name == null) { _policyNote.Text = ""; return; }
         var saved = HostIdentity.DisplaysOf(name);
-        foreach (var inst in HostPlanning.AllInstances)
+        var screens = HostIdentity.ScreensOf(name) ?? new List<MonitorOffer>();
+        // one row per screen the desktop reported: its choice is keyed by the screen (plan-monitor-layout.md, step 4)
+        foreach (var s in screens.OrderBy(x => x.X).ThenBy(x => x.Y))
         {
-            var p = DisplayPolicies.For(saved, inst.Label);
-            var sizeLabel = DisplayPolicies.Sizes.FirstOrDefault(s => s.width == p.MaxWidth && s.height == p.MaxHeight).label
+            var p = DisplayPolicies.Choose(saved, s.Id, null);
+            var sizeLabel = DisplayPolicies.Sizes.FirstOrDefault(z => z.width == p.MaxWidth && z.height == p.MaxHeight).label
                             ?? DisplayPolicies.Sizes[^1].label;
-            var row = _policy.Rows[_policy.Rows.Add(inst.Label, p.Enabled, sizeLabel, p.MaxFps.ToString(), "")];
-            row.Tag = inst.Label;
+            var row = _policy.Rows[_policy.Rows.Add(ScreenText(s), p.Enabled, sizeLabel, p.MaxFps.ToString(), "")];
+            row.Tag = s.Id;
         }
         RefreshAgreed();
-        _policyNote.Text = saved == null
-            ? $"'{name}' has the defaults: every display on, up to 4K at 60 frames per second. Change them and press Save."
-            : $"Choices saved for '{name}'. They apply at its next connection.";
+        _policyNote.Text = screens.Count == 0
+            ? $"'{name}' has not connected yet, so its screens are not known. They appear here after it connects."
+            : saved == null
+                ? $"'{name}' has the defaults: every screen on, up to 4K at 60 frames per second. Change them and press Save."
+                : $"Choices saved for '{name}'. They apply at its next connection.";
     }
+
+    /// <summary>A screen of the desktop as the settings show it: its number in the desktop's arrangement, size and position.</summary>
+    private static string ScreenText(MonitorOffer s) =>
+        $"{s.Id.Replace(@"\\.\", "")} {s.Width}x{s.Height} at {s.X},{s.Y}" + (s.Primary ? " (primary)" : "") + (s.Rotation != 0 ? $" rotated {s.Rotation}°" : "");
 
     /// <summary>The "last agreed" column, from the connections this session (it changes while the host runs).</summary>
     private void RefreshAgreed()
@@ -88,10 +96,8 @@ public sealed partial class SettingsForm
         if (_policy == null) return;
         foreach (DataGridViewRow row in _policy.Rows)
         {
-            var label = (string)row.Tag!;
-            row.Cells["Agreed"].Value = _app.Host.Agreed.TryGetValue(label, out var a)
-                ? $"{a.Width}x{a.Height} at {a.Fps} fps"
-                : "not used yet";
+            var a = _app.Host.AgreedOn((string)row.Tag!);
+            row.Cells["Agreed"].Value = a != null ? $"{a.Width}x{a.Height} at {a.Fps} fps" : "not used yet";
         }
     }
 

@@ -179,7 +179,11 @@ public static class HostIdentity
 
     /// <summary>A paired desktop: its name, the hash of its token, when it paired, its ultrasound id, and the choices for its displays
     /// (null = the defaults: every display on, up to 4K at 60 frames per second).</summary>
-    public sealed record PairedDesktop(string Name, string TokenHash, string Created, string UltraId = "", List<DisplayPolicy>? Displays = null);
+    /// <remarks>Displays are keyed by the desktop's screen (its MonitorOffer id, plan-monitor-layout.md step 4); entries keyed by
+    /// a display name (M1, M2, TV: the choices of older versions) still apply to the streams of that name when no screen matches.
+    /// Screens is the screen report the desktop sent last, so the Host tab can show them while the desktop is offline.</remarks>
+    public sealed record PairedDesktop(string Name, string TokenHash, string Created, string UltraId = "", List<DisplayPolicy>? Displays = null,
+        List<MonitorOffer>? Screens = null);
 
     private static string ClientsFile => Path.Combine(Paths.HostState, "paired-desktops.json");
 
@@ -223,6 +227,23 @@ public static class HostIdentity
     /// <summary>The display choices of a desktop, by its name (null = the defaults).</summary>
     public static List<DisplayPolicy>? DisplaysOf(string name) =>
         Desktops().FirstOrDefault(d => d.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.Displays;
+
+    /// <summary>Remembers the screens a desktop reported (by its token), when they changed.</summary>
+    public static void SetScreens(string token, IReadOnlyList<MonitorOffer> screens)
+    {
+        var h = Hash(token);
+        var list = Desktops();
+        var i = list.FindIndex(d => d.TokenHash == h);
+        if (i < 0) return;
+        var now = screens.ToList();
+        if (list[i].Screens != null && list[i].Screens!.SequenceEqual(now)) return;
+        list[i] = list[i] with { Screens = now };
+        SaveDesktops(list);
+    }
+
+    /// <summary>The screens a desktop reported the last time it connected (null when it has not reported them yet).</summary>
+    public static List<MonitorOffer>? ScreensOf(string name) =>
+        Desktops().FirstOrDefault(d => d.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.Screens;
 
     /// <summary>Remembers the display choices of a desktop: they apply to its next connections.</summary>
     public static void SetDisplays(string name, List<DisplayPolicy> displays)
