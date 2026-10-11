@@ -301,6 +301,16 @@ public sealed class HostService : IDisposable
     public void ReportMonitors(string token, IReadOnlyList<MonitorOffer>? monitors)
     {
         if (monitors == null || token == "") return;
+        // what changed since the desktop's last report: a screen added or removed while connected (plan-monitor-layout.md, step 6)
+        if (_desktopScreens.TryGetValue(token, out var before))
+        {
+            var was = before.Select(m => m.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var now = monitors.Select(m => m.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var added = monitors.Where(m => !was.Contains(m.Id)).Select(m => m.Id).ToList();
+            var removed = before.Where(m => !now.Contains(m.Id)).Select(m => m.Id).ToList();
+            if (added.Count > 0 || removed.Count > 0)
+                Log.Info($"the desktop's screens changed: added [{string.Join(", ", added)}], removed [{string.Join(", ", removed)}]");
+        }
         _desktopScreens[token] = monitors;
         _latestScreens = monitors;
         HostIdentity.SetScreens(token, monitors);

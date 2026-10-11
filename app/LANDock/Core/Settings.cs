@@ -11,8 +11,11 @@ public sealed class StreamSettings
     public string Name { get; set; } = "";
     /// <summary>Moonlight's port on the host. Set by the host at pairing and at every start.</summary>
     public int Port { get; set; }
-    /// <summary>1-based, left to right on this PC (see "monitors").</summary>
+    /// <summary>1-based, left to right on this PC (see "monitors"). Kept with ScreenId; ScreenId decides when both are set.</summary>
     public int Monitor { get; set; } = 1;
+    /// <summary>The screen this display is shown on, by its device name (\\.\DISPLAY1). Unlike the number, it does not change when
+    /// another screen is plugged in (plan-monitor-layout.md, step 6). Empty for settings written before it.</summary>
+    public string ScreenId { get; set; } = "";
     /// <summary>A display that is not in use (for example a fourth display on a desktop with three screens) is kept but not started
     /// and not reported to the laptop.</summary>
     public bool Enabled { get; set; } = true;

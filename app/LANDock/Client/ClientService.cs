@@ -31,26 +31,40 @@ public sealed class ClientService
     }
 
     /// <summary>What the handshake asks for each display: the size of the monitor it is shown on, its frame rate, and the screen.</summary>
-    private static List<DisplayOffer> OffersFor(IEnumerable<StreamSettings> chosen)
+    private static List<DisplayOffer> OffersFor(IEnumerable<StreamSettings> chosen, IReadOnlyList<MonitorInfo> mons)
     {
-        var mons = Monitors();
         return chosen.Select(s =>
         {
-            var m = mons.FirstOrDefault(x => x.Index == s.Monitor) ?? mons.First();
+            var m = ScreenOf(s, mons);
+            // a display whose screen is not connected is offered at the primary screen's size, without a screen
+            if (m == null) { var p = mons.First(); return new DisplayOffer(s.Name, p.Bounds.Width, p.Bounds.Height, s.Fps, null); }
             return new DisplayOffer(s.Name, m.Bounds.Width, m.Bounds.Height, s.Fps, m.Name);
         }).ToList();
     }
 
-    /// <summary>The screens that the given monitors are, as the handshake reports them (plan-monitor-layout.md, step 1). Only the
-    /// screens the streams use are reported: the user extends to those.</summary>
-    public static List<LANDock.Host.MonitorOffer> ScreenReport(IEnumerable<int> monitorIndexes)
+    /// <summary>The screen a display is shown on. A display that has a screen id is shown on that screen, or on none while it is not
+    /// connected (it is not moved to another screen). A display without an id (settings of older versions) uses its number.</summary>
+    public static MonitorInfo? ScreenOf(StreamSettings s, IReadOnlyList<MonitorInfo> mons) =>
+        string.IsNullOrEmpty(s.ScreenId)
+            ? mons.FirstOrDefault(m => m.Index == s.Monitor)
+            : mons.FirstOrDefault(m => m.Name.Equals(s.ScreenId, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Shows a display on the screen with this number (as the Client tab lists them), keeping its id in step.</summary>
+    public static void AssignMonitor(StreamSettings s, int index)
     {
-        var used = monitorIndexes.ToHashSet();
-        return Monitors().Where(m => used.Contains(m.Index))
-            .Select(m => new LANDock.Host.MonitorOffer(m.Name, m.Bounds.X, m.Bounds.Y, m.Bounds.Width, m.Bounds.Height,
-                ScreenRotation(m.Name), m.Primary))
-            .ToList();
+        s.Monitor = index;
+        s.ScreenId = Monitors().FirstOrDefault(m => m.Index == index)?.Name ?? "";
     }
+
+    /// <summary>The screens the enabled displays are shown on and that are connected now.</summary>
+    public static List<MonitorInfo> ScreensInUse(HostProfile h, IReadOnlyList<MonitorInfo> mons) =>
+        h.Streams.Where(s => s.Enabled).Select(s => ScreenOf(s, mons)).Where(m => m != null).Select(m => m!)
+            .DistinctBy(m => m.Name).ToList();
+
+    /// <summary>The screens that the given monitors are, as the handshake reports them (plan-monitor-layout.md, step 1).</summary>
+    public static List<LANDock.Host.MonitorOffer> ScreenReport(IEnumerable<MonitorInfo> screens) =>
+        screens.Select(m => new LANDock.Host.MonitorOffer(m.Name, m.Bounds.X, m.Bounds.Y, m.Bounds.Width, m.Bounds.Height,
+            ScreenRotation(m.Name), m.Primary)).ToList();
 
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     private static extern bool EnumDisplaySettingsW(string deviceName, int modeNum, byte[] devMode);
@@ -199,19 +213,19 @@ public sealed class ClientService
 
         // the handshake starts the displays this PC uses (a display the laptop does not run yet is started now), so that each
         // one listens and can be paired with Moonlight
-        var enabled = Selected(h, null).ToList();
-        if (enabled.Count > 0)
+        // every display of the laptop is paired now, not only the ones in use: a display turned on later (a screen plugged in while
+        // connected, plan-monitor-layout.md step 6) then needs no PIN. The enabled displays come first.
+        var mons = Monitors();
+        var all = h.Streams.OrderByDescending(s => s.Enabled).ToList();
+        try
         {
-            try
-            {
-                using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
-                await c.SessionAsync(h.Token, OffersFor(enabled), _settings.Client.UltrasoundId, ScreenReport(h.Streams.Where(s => s.Enabled).Select(s => s.Monitor)));
-            }
-            catch (ControlException e) { Log.Error($"{h.Name}: the displays could not be started: {e.Message}", null); }
+            using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
+            await c.SessionAsync(h.Token, OffersFor(all, mons), _settings.Client.UltrasoundId, ScreenReport(ScreensInUse(h, mons)));
         }
+        catch (ControlException e) { Log.Error($"{h.Name}: the displays could not be started: {e.Message}", null); }
 
         var bad = 0;
-        foreach (var s in enabled)
+        foreach (var s in all)
         {
             EnsureStream(h, s);
             if (await PairOneAsync(h, s, pin)) Log.Info($"{h.Name} {s.Name}: paired");
@@ -220,6 +234,14 @@ public sealed class ClientService
         if (bad > 0) Log.Info($"{h.Name}: {bad} display(s) not paired with Moonlight; pair again with the PIN shown on the laptop");
         else Log.Info($"{h.Name}: all displays paired");
         return bad == 0;
+    }
+
+    /// <summary>A display that this PC did not have before: on the screen of its position, enabled when this PC has that screen.</summary>
+    private static StreamSettings NewStream(string name, int position, bool enabled)
+    {
+        var s = new StreamSettings { Name = name, Audio = "client", Enabled = enabled };
+        AssignMonitor(s, DefaultMonitor(position));
+        return s;
     }
 
     /// <summary>Takes the host's stream list (names and ports) as the truth, keeping the monitor choices of streams that still exist.</summary>
@@ -232,7 +254,7 @@ public sealed class ClientService
         {
             var r = remote[i];
             var s = h.Streams.FirstOrDefault(x => x.Name.Equals(r.Name, StringComparison.OrdinalIgnoreCase))
-                    ?? new StreamSettings { Name = r.Name, Monitor = DefaultMonitor(i), Audio = "client", Enabled = i < screens };
+                    ?? NewStream(r.Name, i, i < screens);
             s.Name = r.Name;
             s.Port = r.Port;
             list.Add(s);
@@ -312,17 +334,20 @@ public sealed class ClientService
     {
         RequireMoonlight();
         if (!h.Paired) throw new InvalidOperationException($"{h.Name} is not paired yet: press Pair and enter the PIN shown on the laptop");
+        var mons = Monitors();
         var chosen = Selected(h, only).ToList();
-        if (chosen.Count == 0) throw new InvalidOperationException($"{h.Name} has no displays (check the connection first)");
+        foreach (var s in chosen.Where(s => ScreenOf(s, mons) == null)) Log.Info($"{h.Name} {s.Name}: its screen is not connected; not started");
+        chosen = chosen.Where(s => ScreenOf(s, mons) != null).ToList();
+        if (chosen.Count == 0) throw new InvalidOperationException($"{h.Name} has no displays on a connected screen (check the connection first)");
 
-        var offers = OffersFor(chosen);
+        var offers = OffersFor(chosen, mons);
 
         List<RemoteStream> agreed;
         try
         {
             using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
             // every screen the user has set up for this laptop, not only the ones started now: the laptop lays out all of them
-            agreed = await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId, ScreenReport(h.Streams.Where(s => s.Enabled).Select(s => s.Monitor)));
+            agreed = await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId, ScreenReport(ScreensInUse(h, mons)));
         }
         catch (ControlException e) when (e.Status == 401)
         {
@@ -346,7 +371,6 @@ public sealed class ClientService
             throw new InvalidOperationException($"{h.Name} offers no display to this PC: turn one on in the laptop's Host tab (Displays for this desktop)");
 
         var allOk = true;
-        var mons = Monitors();
         foreach (var s in chosen)
         {
             var procs = StreamProcesses(h, s);
@@ -388,8 +412,8 @@ public sealed class ClientService
                 if (p == null) { Log.Info($"{h.Name} {s.Name}: Moonlight did not start or exited; see {LogFile(h, s)}"); allOk = false; continue; }
                 if (hw == IntPtr.Zero) { Log.Info($"{h.Name} {s.Name}: no window appeared within 40 s; see {LogFile(h, s)}"); allOk = false; continue; }
             }
-            var mon = mons.FirstOrDefault(m => m.Index == s.Monitor);
-            if (mon == null) { Log.Info($"{h.Name} {s.Name}: monitor {s.Monitor} does not exist on this PC (see the Client tab); leaving the window where it is"); allOk = false; continue; }
+            var mon = ScreenOf(s, mons);
+            if (mon == null) { Log.Info($"{h.Name} {s.Name}: its screen is not connected; leaving the window where it is"); allOk = false; continue; }
             if (launched)
             {
                 if (!await WaitVideoAsync(LogFile(h, s), 40)) Log.Info($"{h.Name} {s.Name}: no video within 40 s (see {LogFile(h, s)}); placing the window anyway");
@@ -406,12 +430,15 @@ public sealed class ClientService
             await Task.Delay(2000);
         }
         Log.Info($"{h.Name}: done. Click once in a window to give it keyboard focus; moving the mouse between monitors moves the laptop's pointer between its displays");
+        Follow(h);
         return allOk;
     }
 
     public async Task StopAsync(HostProfile h, string? only = null)
     {
-        foreach (var s in Selected(h, only))
+        if (only == null) StopFollowing(h);
+        // a display is stopped whether or not it is turned on (a display whose screen was removed is turned off, and may run still)
+        foreach (var s in h.Streams.Where(s => string.IsNullOrEmpty(only) || s.Name.Equals(only, StringComparison.OrdinalIgnoreCase)))
         {
             try
             {
@@ -458,6 +485,171 @@ public sealed class ClientService
         }
         catch { }
         Log.Info($"{h.Name}: removed from this PC");
+    }
+
+    // ---- following the screens (plan-monitor-layout.md, step 6) -----------------------------------------------------------
+
+    /// <summary>How long a screen may be gone before its display is stopped: a screen that is unplugged for a moment is not a reason
+    /// to stop its display.</summary>
+    public static readonly TimeSpan MissingGrace = TimeSpan.FromSeconds(30);
+
+    private readonly Dictionary<string, CancellationTokenSource> _following = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Follows the screens of this PC while the laptop's displays run. A screen added gets a display (the first free one, or the
+    /// display it had before); a screen removed has its display stopped after <see cref="MissingGrace"/>; a screen whose size or
+    /// position changed has its display restarted. The laptop is told the new screens at once. Started with the displays, and stopped
+    /// when they all stop.</summary>
+    public void Follow(HostProfile h)
+    {
+        lock (_following)
+        {
+            if (_following.ContainsKey(h.Id)) return;
+            var cts = new CancellationTokenSource();
+            _following[h.Id] = cts;
+            _ = Task.Run(() => FollowAsync(h, cts.Token));
+        }
+    }
+
+    public void StopFollowing(HostProfile h)
+    {
+        lock (_following)
+        {
+            if (_following.Remove(h.Id, out var cts)) cts.Cancel();
+        }
+    }
+
+    /// <summary>The screens of this PC as one comparable text: a change of name, position, size or rotation changes it.</summary>
+    public static string LayoutOf(IEnumerable<MonitorInfo> mons) =>
+        string.Join("|", mons.Select(m => $"{m.Name}@{m.Bounds.X},{m.Bounds.Y},{m.Bounds.Width}x{m.Bounds.Height}r{ScreenRotation(m.Name)}"));
+
+    /// <summary>What changed between two lists of screens: the screens added, the ones removed, and those whose size or position changed.</summary>
+    public static (List<MonitorInfo> added, List<MonitorInfo> removed, List<MonitorInfo> changed) ScreenChanges(IReadOnlyList<MonitorInfo> before, IReadOnlyList<MonitorInfo> now)
+    {
+        var old = before.ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
+        var cur = now.ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
+        var added = now.Where(m => !old.ContainsKey(m.Name)).ToList();
+        var removed = before.Where(m => !cur.ContainsKey(m.Name)).ToList();
+        // a size change restarts the display (its stream has the new size); a move only changes the layout the laptop uses
+        var changed = now.Where(m => old.TryGetValue(m.Name, out var o) && (o.Bounds.Width != m.Bounds.Width || o.Bounds.Height != m.Bounds.Height)).ToList();
+        return (added, removed, changed);
+    }
+
+    /// <summary>The display that takes a new screen: the first display that is not showing a connected screen and is not waiting for
+    /// its own screen to come back. A display that never had a screen comes first.</summary>
+    public static StreamSettings? FreeStream(HostProfile h, IReadOnlyList<MonitorInfo> mons, IReadOnlyDictionary<string, DateTime> missing) =>
+        h.Streams.Where(s => !missing.ContainsKey(s.Name) && !(s.Enabled && ScreenOf(s, mons) != null))
+            .OrderBy(s => string.IsNullOrEmpty(s.ScreenId) ? 0 : 1).FirstOrDefault();
+
+    private async Task FollowAsync(HostProfile h, CancellationToken ct)
+    {
+        var last = Monitors();
+        var lastLayout = LayoutOf(last);
+        var missing = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);   // display -> since when its screen is gone
+        Log.Info($"{h.Name}: following this PC's screens (a change is picked up within 2 seconds)");
+        while (!ct.IsCancellationRequested)
+        {
+            try { await Task.Delay(2000, ct); } catch (OperationCanceledException) { break; }
+            try
+            {
+                var now = Monitors();
+                var layout = LayoutOf(now);
+                if (layout != lastLayout)
+                {
+                    lastLayout = layout;
+                    var (added, removed, changed) = ScreenChanges(last, now);
+                    var moved = now.Where(m => last.Any(o => o.Name.Equals(m.Name, StringComparison.OrdinalIgnoreCase) && o.Bounds.Location != m.Bounds.Location)).ToList();
+                    last = now;
+                    Log.Info($"{h.Name}: screens changed: " + Describe(added, "added") + Describe(removed, "removed") + Describe(changed, "resized") + Describe(moved, "moved"));
+                    // a move alone changes no display, and it is not reported: the laptop's layout moves its displays, which moves
+                    // screens on a PC that runs the laptop too, so reporting every move would never settle. The next report (a screen
+                    // added, removed or resized) carries the positions then.
+                    if (added.Count > 0 || removed.Count > 0 || changed.Count > 0)
+                        await ApplyScreenChangesAsync(h, now, added, removed, changed, missing, ct);
+                }
+                await ExpireMissingAsync(h, now, missing, ct);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex) { Log.Error($"{h.Name}: following the screens", ex); }
+        }
+        Log.Info($"{h.Name}: no longer following this PC's screens");
+    }
+
+    private static string Describe(IEnumerable<MonitorInfo> screens, string what)
+    {
+        var list = screens.Select(m => $"{m.Name} {m.Bounds.Width}x{m.Bounds.Height}").ToList();
+        return list.Count == 0 ? "" : $"{what} {string.Join(", ", list)}; ";
+    }
+
+    private async Task ApplyScreenChangesAsync(HostProfile h, IReadOnlyList<MonitorInfo> now, List<MonitorInfo> added, List<MonitorInfo> removed,
+        List<MonitorInfo> changed, Dictionary<string, DateTime> missing, CancellationToken ct)
+    {
+        // a screen that is gone: its display waits for the grace period
+        foreach (var m in removed)
+            foreach (var s in h.Streams.Where(x => x.Enabled && x.ScreenId.Equals(m.Name, StringComparison.OrdinalIgnoreCase)))
+                missing.TryAdd(s.Name, DateTime.Now);
+        // a screen that is connected again: its display is no longer waiting
+        foreach (var m in now)
+            foreach (var s in h.Streams.Where(x => x.ScreenId.Equals(m.Name, StringComparison.OrdinalIgnoreCase)))
+                missing.Remove(s.Name);
+        // a new screen (or one that came back): its display is started; a new screen gets the first free display
+        foreach (var m in added) await ShowScreenAsync(h, m, now, missing);
+        // a screen whose size or position changed: its display is started again with the size it now needs
+        foreach (var m in changed)
+            foreach (var s in h.Streams.Where(x => x.Enabled && x.ScreenId.Equals(m.Name, StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                try { await StopAsync(h, s.Name); await StartAsync(h, s.Name); }
+                catch (Exception ex) { Log.Error($"{h.Name} {s.Name}: restarting for the new screen", ex); }
+            }
+        await SendScreensAsync(h, now, ct);
+    }
+
+    private async Task ShowScreenAsync(HostProfile h, MonitorInfo m, IReadOnlyList<MonitorInfo> now, Dictionary<string, DateTime> missing)
+    {
+        var display = h.Streams.FirstOrDefault(x => x.ScreenId.Equals(m.Name, StringComparison.OrdinalIgnoreCase))
+                      ?? FreeStream(h, now, missing);
+        if (display == null)
+        {
+            Log.Info($"{h.Name}: {m.Name} is new, but all {h.Streams.Count} displays of the laptop are in use");
+            return;
+        }
+        display.ScreenId = m.Name;
+        display.Monitor = m.Index;
+        display.Enabled = true;
+        _settings.Save();
+        Log.Info($"{h.Name} {display.Name}: shown on {m.Name} now");
+        try { await StartAsync(h, display.Name); }
+        catch (Exception ex) { Log.Error($"{h.Name} {display.Name}: starting for {m.Name}", ex); }
+    }
+
+    /// <summary>Stops the displays whose screens have been gone for the grace period; they are turned off until their screen returns.</summary>
+    private async Task ExpireMissingAsync(HostProfile h, IReadOnlyList<MonitorInfo> now, Dictionary<string, DateTime> missing, CancellationToken ct)
+    {
+        foreach (var (name, since) in missing.ToList())
+        {
+            if (DateTime.Now - since < MissingGrace) continue;
+            missing.Remove(name);
+            var s = h.Streams.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (s == null) continue;
+            Log.Info($"{h.Name} {s.Name}: its screen {s.ScreenId} has been gone for {MissingGrace.TotalSeconds:0} s; the display is stopped");
+            await StopAsync(h, s.Name);
+            s.Enabled = false;
+            _settings.Save();
+            await SendScreensAsync(h, now, ct);
+        }
+    }
+
+    /// <summary>Tells the laptop the screens now in use (and agrees the sizes of the enabled displays again). The laptop lays out the
+    /// displays by them.</summary>
+    private async Task SendScreensAsync(HostProfile h, IReadOnlyList<MonitorInfo> now, CancellationToken ct)
+    {
+        try
+        {
+            var offers = OffersFor(h.Streams.Where(s => s.Enabled && ScreenOf(s, now) != null), now);
+            using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
+            await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId, ScreenReport(ScreensInUse(h, now)), ct);
+            Log.Info($"{h.Name}: the laptop knows the screens now in use ({ScreensInUse(h, now).Count})");
+        }
+        catch (Exception ex) when (ex is ControlException or HttpRequestException or TaskCanceledException) { Log.Error($"{h.Name}: could not tell the laptop about the screens", ex); }
     }
 
     // ---- window placement ---------------------------------------------------------------------------------------------

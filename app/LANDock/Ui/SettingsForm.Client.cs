@@ -221,7 +221,7 @@ public sealed partial class SettingsForm
         {
             var r = _streams.Rows[i];
             var s = _selected.Streams[i];
-            s.Monitor = Math.Max(1, ToInt(r.Cells["Monitor"].Value, s.Monitor));
+            LANDock.Client.ClientService.AssignMonitor(s, Math.Max(1, ToInt(r.Cells["Monitor"].Value, s.Monitor)));
             s.Audio = $"{r.Cells["Audio"].Value}" == "host" ? "host" : "client";
             s.Fps = Math.Clamp(ToInt(r.Cells["Fps"].Value, 60), 30, 60);
             s.Bitrate = Math.Max(0, ToInt(r.Cells["Bitrate"].Value, 0));

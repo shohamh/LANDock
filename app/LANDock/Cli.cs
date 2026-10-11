@@ -25,7 +25,7 @@ internal static class Cli
         LANDock client remove-host NAME          forget a host on this PC
         LANDock client assign HOST STREAM MONITOR [--mode windowed] [--rect x,y,w,h]
                                                  send a display to a monitor of this PC
-        LANDock client start|stop|status [--host NAME] [--only STREAM]
+        LANDock client start|stop|status|follow [--host NAME] [--only STREAM]
         LANDock update check                     look for a newer release now
         LANDock update apply                     check, then install everything that is newer
         LANDock --version
@@ -296,7 +296,7 @@ internal static class Cli
             {
                 var h = client.Host(args[2]) ?? throw new ArgumentException("no such host");
                 var s = h.Streams.FirstOrDefault(x => x.Name.Equals(args[3], StringComparison.OrdinalIgnoreCase)) ?? throw new ArgumentException($"no display {args[3]}");
-                s.Monitor = int.Parse(args[4]);
+                LANDock.Client.ClientService.AssignMonitor(s, int.Parse(args[4]));
                 // a display given a screen is in use; --off keeps it set up but not started
                 s.Enabled = !args.Contains("--off");
                 if (Opt(args, "--mode") is { } mode) s.DisplayMode = mode;
@@ -310,6 +310,19 @@ internal static class Cli
             {
                 var h = client.Host(hostName) ?? throw new ArgumentException("no host: add one with client add-host");
                 return await client.StartAsync(h, only) ? 0 : 1;
+            }
+
+            case "follow":
+            {
+                // follows this PC's screens until Ctrl+C: a screen plugged in or removed changes the displays on the laptop (step 6)
+                var h = client.Host(hostName) ?? throw new ArgumentException("no host: add one with client add-host");
+                var done = new TaskCompletionSource();
+                Console.CancelKeyPress += (_, e) => { e.Cancel = true; done.TrySetResult(); };
+                client.Follow(h);
+                Console.WriteLine($"following the screens of this PC for {h.Name} (Ctrl+C stops)");
+                await done.Task;
+                client.StopFollowing(h);
+                return 0;
             }
 
             case "stop":
