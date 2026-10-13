@@ -119,4 +119,16 @@ jobs:
         run: |
           PRE=""
           [[ "$VERSION" == *-* ]] && PRE="--prerelease"
-          gh release create "v$VERSION" dist/* --title "LANDock v$VERSION" --notes-file notes.md $PRE
+          # GitHub lists the files of a release in the order they were added: the installer first, then an empty marker file that
+          # says the files after it are for the in-app updater, then those files (one upload each, in this order)
+          SETUP="dist/LANDock-Setup-$VERSION.exe"
+          MARKER="dist/VVV all files below this are just for auto update purposes VVV.txt"
+          : > "$MARKER"
+          REST=()
+          for f in dist/*; do
+            case "$f" in "$SETUP"|"$MARKER") continue ;; esac
+            REST+=("$f")
+          done
+          gh release create "v$VERSION" "$SETUP" --title "LANDock v$VERSION" --notes-file notes.md $PRE
+          gh release upload "v$VERSION" "$MARKER"
+          gh release upload "v$VERSION" "${REST[@]}"

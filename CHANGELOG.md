@@ -6,6 +6,12 @@ a version becomes the text of its GitHub release.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-13
+
+### Changed
+- **The release lists the installer first.** Then comes an empty file, "VVV all files below this are just for auto update
+  purposes VVV.txt", and after it the update parts (the app, host and client zips, the manifest and the checksums).
+
 ## [0.4.1] - 2026-10-13
 
 ### Changed
