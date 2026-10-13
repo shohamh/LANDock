@@ -608,7 +608,7 @@ public sealed class HostService : IDisposable
                 if (current == output && !resized) continue;
                 // a copy waits for the stream that runs now to end; a size does not (that stream is for the old size)
                 if (current != output && StreamRunningOf(inst)) { Log.Info($"{inst.Label}: its copy changes at the next connection (a stream of it runs now)"); continue; }
-                if (resized) Log.Info($"{inst.Label}: size changes from {was.Width}x{was.Height} to {o.Width}x{o.Height}; the instance starts afresh");
+                if (resized && was != null) Log.Info($"{inst.Label}: size changes from {was.Width}x{was.Height} to {o.Width}x{o.Height}; the instance starts afresh");
                 KillInstance(inst);
                 // the driver keeps a display after its instance stops, and the new instance would take that display with its old size:
                 // the display of the client is removed first, so the stream makes one at the new size

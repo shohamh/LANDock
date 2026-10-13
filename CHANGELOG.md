@@ -6,6 +6,14 @@ a version becomes the text of its GitHub release.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-13
+
+### Changed
+- **"Copy" is now "Duplicate" in the settings.** The laptop's general setting and each desktop's own setting read "Duplicate the
+  laptop screen onto", and "No copy" is "No duplicate".
+- **The below placements name the desktop's screen.** "Laptop below the rightmost screen" is now "Laptop below the desktop's
+  rightmost screen", and the same for the leftmost screen.
+
 ## [0.4.0] - 2026-10-13
 
 ### Added
