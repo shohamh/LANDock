@@ -65,6 +65,27 @@ public static class LaptopLayout
     };
 
     /// <summary>
+    /// Where the desktop's arrangement starts, with the laptop's screen at (0,0), for the placement: the origin of the desktop's
+    /// top-left screen corner. For the placements below the desktop, the desktop is moved so that its lowest screen over the laptop's
+    /// width touches the laptop's top edge; the other screens keep their place in the arrangement. Windows keeps a display that touches
+    /// no other display where it was, so a screen floating above the laptop would never move there.
+    /// </summary>
+    public static (int x, int y) GroupOrigin(ScreenInfo laptop, IReadOnlyList<MonitorOffer> desktop, LaptopPlacement placement)
+    {
+        var minX = desktop.Min(s => s.X);
+        var minY = desktop.Min(s => s.Y);
+        var groupW = desktop.Max(s => s.X + s.Width) - minX;
+        var groupH = desktop.Max(s => s.Y + s.Height) - minY;
+        var (originX, originY) = Origin(laptop.Width, laptop.Height, groupW, groupH, placement);
+        if (placement is LaptopPlacement.BelowCentered or LaptopPlacement.BelowRight or LaptopPlacement.BelowLeft)
+        {
+            var over = desktop.Where(s => originX + (s.X - minX) < laptop.Width && originX + (s.X - minX) + s.Width > 0).ToList();
+            originY = -(over.Count > 0 ? over.Max(s => s.Y + s.Height - minY) : groupH);
+        }
+        return (originX, originY);
+    }
+
+    /// <summary>
     /// The moves ("DISPLAYn=x,y") that put the laptop's virtual displays where the desktop's screens are, for the placement. 'desktop' is
     /// the desktop's screens as it reported them. 'active' is each virtual display the laptop runs and the desktop screen it shows; 'current'
     /// is where each display is now, so that only the moves that are needed are returned. A screen that shows a copy of the laptop's
@@ -78,17 +99,7 @@ public static class LaptopLayout
 
         var minX = desktop.Min(s => s.X);
         var minY = desktop.Min(s => s.Y);
-        var groupW = desktop.Max(s => s.X + s.Width) - minX;
-        var groupH = desktop.Max(s => s.Y + s.Height) - minY;
-        var (originX, originY) = Origin(laptop.Width, laptop.Height, groupW, groupH, placement);
-        if (placement is LaptopPlacement.BelowCentered or LaptopPlacement.BelowRight or LaptopPlacement.BelowLeft)
-        {
-            // the desktop's lowest screen over the laptop's width touches the laptop's top edge; the others keep their place in the
-            // arrangement. Windows keeps a display that touches no other display where it was, so a screen floating above the laptop
-            // would never move there.
-            var over = desktop.Where(s => originX + (s.X - minX) < laptop.Width && originX + (s.X - minX) + s.Width > 0).ToList();
-            originY = -(over.Count > 0 ? over.Max(s => s.Y + s.Height - minY) : groupH);
-        }
+        var (originX, originY) = GroupOrigin(laptop, desktop, placement);
 
         var placed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (display, screenId) in active)

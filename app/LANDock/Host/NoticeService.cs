@@ -29,6 +29,17 @@ public sealed class NoticeService : IDisposable
     public static bool ConnectedNow(DateTime now, DateTime lastSession, DateTime lastBeat, bool displayRunning) =>
         displayRunning || now - lastSession <= ConnectedFor || now - lastBeat <= BeatFor;
 
+    /// <summary>The laptop's display for each screen of a desktop: the screens left to right (then top to bottom), one display each, in
+    /// the laptop's display order. Connect starts these displays, and the settings draw them, so both use this.</summary>
+    public static List<(string Label, MonitorOffer Screen)> DisplaysFor(IEnumerable<MonitorOffer> screens) =>
+        screens.OrderBy(s => s.X).ThenBy(s => s.Y).Take(HostPlanning.AllInstances.Count)
+            .Select((s, i) => (HostPlanning.AllInstances[i].Label, s)).ToList();
+
+    /// <summary>True while a paired desktop is connected (the rule the notice uses, so the settings and the notice agree).</summary>
+    public bool IsConnected(HostIdentity.PairedDesktop d) =>
+        ConnectedNow(DateTime.Now, _host.LastSessionOf(d.TokenHash), _host.LastBeatOf(d.TokenHash),
+            _host.Launched().Any(i => HostService.ActiveDisplayOf(i) != null));
+
     private readonly HostService _host;
     private readonly PresenceBrowser _presence;
     private readonly NoticeTracker _tracker = new();
@@ -123,7 +134,7 @@ public sealed class NoticeService : IDisposable
         var screens = (HostIdentity.ScreensOf(d.Name) ?? new List<MonitorOffer>()).OrderBy(s => s.X).ThenBy(s => s.Y).ToList();
         if (screens.Count == 0) return "the desktop has not reported its screens yet: connect it from the desktop first";
         if (screens.Count > HostPlanning.MaxDisplays) return $"the desktop has {screens.Count} screens; the laptop serves up to {HostPlanning.MaxDisplays}";
-        var offers = screens.Select((s, i) => new StreamOffer(HostPlanning.AllInstances[i].Label, s.Width, s.Height, 60, s.Id)).ToList();
+        var offers = DisplaysFor(screens).Select(x => new StreamOffer(x.Label, x.Screen.Width, x.Screen.Height, 60, x.Screen.Id)).ToList();
         var failed = await _host.EnsureDisplaysAsync(offers, ct, _host.CopyScreenFor(d, screens));
         if (failed.Count > 0) return $"could not start {string.Join(", ", failed)} on this laptop (see its log)";
         _host.RequestStart(desktopId);

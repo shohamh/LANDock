@@ -6,6 +6,25 @@ a version becomes the text of its GitHub release.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-13
+
+### Added
+- **Connect from either side.** The laptop's Host tab lists each paired desktop with its status (connected or not) and a
+  **Connect to this desktop** button, which starts the laptop's displays and asks the desktop to start its windows. The desktop's
+  Client tab has **Connect to laptop** and **Disconnect**, with a line that says whether it is connected.
+- **A diagram of the desktop's screens.** Selecting a desktop on the laptop shows its screens placed as the laptop's placement
+  puts them, with the laptop's screen and the laptop display that shows each screen. It uses the same placement and display choice
+  as Connect.
+
+### Changed
+- **Pairing says what it covers.** The desktop pairs all of the laptop's displays (so a screen added later needs no PIN), and its
+  log and Client tab say how many are in use and how many are spare, with the progress of the pairing.
+
+### Known issues
+- **A connect can fail with "control stream establishment failed ... udp 47999".** The cause is not known yet: the stream's port
+  is the laptop's port 49989 plus offsets, and Moonlight asked for the default port 47989 plus offsets. The stream's log on the
+  desktop shows which port Moonlight used.
+
 ## [0.5.0] - 2026-10-13
 
 ### Added

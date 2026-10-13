@@ -9,7 +9,9 @@ namespace LANDock.Ui;
 public sealed partial class SettingsForm
 {
     private ListView _desktops = null!;
-    private Button _forget = null!;
+    private Button _forget = null!, _connectDesktop = null!;
+    private Label _connectStatus = null!;
+    private ScreensView _screensView = null!;
     private Label _desktopsNote = null!;
     private string _desktopsSignature = "";
     private DataGridView _policy = null!;
@@ -79,17 +81,29 @@ public sealed partial class SettingsForm
         _desktops = new ListView { View = View.Details, FullRowSelect = true, MultiSelect = false, HideSelection = false, GridLines = true, Width = 700, Height = 110 };
         _desktops.Columns.Add("Desktop", 260);
         _desktops.Columns.Add("Paired", 200);
+        _desktops.Columns.Add("Now", 130);
         _desktops.SelectedIndexChanged += (_, _) =>
         {
             _forget.Enabled = _desktops.SelectedItems.Count > 0;
+            _connectDesktop.Enabled = _desktops.SelectedItems.Count > 0 && _app.Host.Running;
+            _connectStatus.Text = "";
+            UpdateScreensView();
             LoadPolicy();
             LoadLayout();
         };
         col.Controls.Add(_desktops);
+        // where the selected desktop's screens go on the laptop, before Connect starts anything
+        _screensView = new ScreensView();
+        col.Controls.Add(new Label { Text = "The selected desktop's screens and the laptop's displays for them:", AutoSize = true, Margin = new Padding(0, 6, 0, 0) });
+        col.Controls.Add(_screensView);
         _forget = new Button { Text = "Forget selected desktop", AutoSize = true, MinimumSize = new Size(190, 28), Enabled = false };
         _forget.Click += async (_, _) => await ForgetSelectedDesktop();
         _desktopsNote = new Label { AutoSize = true, MaximumSize = new Size(700, 0), ForeColor = SystemColors.GrayText };
-        col.Controls.Add(Row(_forget));
+        _connectDesktop = new Button { Text = "Connect to this desktop", AutoSize = true, MinimumSize = new Size(190, 28), Enabled = false };
+        _connectDesktop.Click += async (_, _) => await ConnectSelectedDesktop();
+        _connectStatus = new Label { AutoSize = true, MaximumSize = new Size(700, 0) };
+        col.Controls.Add(Row(_connectDesktop, _forget));
+        col.Controls.Add(_connectStatus);
         col.Controls.Add(_desktopsNote);
 
         col.Controls.Add(Heading("How the virtual displays work for each screen of the selected desktop"));
@@ -227,13 +241,60 @@ public sealed partial class SettingsForm
             _desktopsSignature = signature;
             _desktops.Items.Clear();
             foreach (var d in list)
-                _desktops.Items.Add(new ListViewItem(new[] { d.Name, d.Created }) { Tag = d.Name });
+                _desktops.Items.Add(new ListViewItem(new[] { d.Name, d.Created, "" }) { Tag = d.Name });
             _forget.Enabled = false;
+            _connectDesktop.Enabled = false;
+            UpdateScreensView();
+        }
+        // whether each desktop is connected now (the same rule as the notice), refreshed on every pass
+        foreach (ListViewItem item in _desktops.Items)
+        {
+            var d = list.FirstOrDefault(x => x.Name.Equals((string)item.Tag!, StringComparison.OrdinalIgnoreCase));
+            if (d != null) item.SubItems[2].Text = _app.Notices.IsConnected(d) ? "connected" : "not connected";
         }
         _desktopsNote.Text = list.Count == 0
             ? "No desktop has paired yet. Forgetting a desktop revokes its token and removes its Moonlight pairings (the host must be running for the Moonlight part)."
             : "Forgetting a desktop revokes its token and removes its Moonlight pairings (the host must be running for the Moonlight part).";
         RefreshAgreed();
+    }
+
+    /// <summary>Draws the selected desktop's screens with the placement and the laptop displays that Connect would use.</summary>
+    private void UpdateScreensView()
+    {
+        var name = SelectedDesktop();
+        var d = name == null ? null : HostIdentity.Desktops().FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (d == null)
+        {
+            _screensView.ShowLayout(new List<MonitorOffer>(), null, LaptopPlacement.Left, null);
+            return;
+        }
+        var screens = HostIdentity.ScreensOf(d.Name) ?? new List<MonitorOffer>();
+        // the laptop's primary screen; its size is what the placement is drawn from
+        var laptop = VddTool.Screens().Values.FirstOrDefault(s => s.Primary) ?? new ScreenInfo("DISPLAY1", 0, 0, 1920, 1080, true);
+        var (placement, duplicate) = _app.Host.LayoutOf(d);
+        var copy = screens.Count == 0 ? null : LaptopLayout.DuplicateScreen(screens, duplicate)?.Id;
+        _screensView.ShowLayout(screens, laptop, placement, copy);
+    }
+
+    // the laptop asks the selected desktop to connect: its displays start here and its windows start there (as the notice's Connect does)
+    private async Task ConnectSelectedDesktop()
+    {
+        var name = SelectedDesktop();
+        var d = name == null ? null : HostIdentity.Desktops().FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (d == null) return;
+        if (string.IsNullOrEmpty(d.UltraId))
+        {
+            _connectStatus.Text = $"'{d.Name}' has no id for the laptop to reach it yet: connect it from the desktop once.";
+            return;
+        }
+        _connectDesktop.Enabled = false;
+        _connectStatus.Text = $"Connecting to '{d.Name}'...";
+        try
+        {
+            var reason = await _app.Notices.ConnectAsync(d.UltraId);
+            _connectStatus.Text = reason == null ? $"Asked '{d.Name}' to connect: its windows start in a few seconds." : $"Not connected: {reason}.";
+        }
+        finally { _connectDesktop.Enabled = _desktops.SelectedItems.Count > 0 && _app.Host.Running; }
     }
 
     private async Task ForgetSelectedDesktop()

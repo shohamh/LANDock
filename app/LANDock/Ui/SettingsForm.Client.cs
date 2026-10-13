@@ -17,7 +17,7 @@ public sealed partial class SettingsForm
                    _addHost = null!, _check = null!, _startStreams = null!, _stopStreams = null!;
     private DataGridView _streams = null!;
     private ComboBox _displayMode = null!;
-    private Label _hostInfo = null!, _monitors = null!, _clientStatus = null!;
+    private Label _hostInfo = null!, _monitors = null!, _clientStatus = null!, _connState = null!;
     private HostProfile? _selected;
     private ClientEntry? _selectedEntry;
     private string _selectedKey = "";
@@ -105,9 +105,11 @@ public sealed partial class SettingsForm
         col.Controls.Add(Row(new Label { Text = "Default mode:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _displayMode));
 
         _check = Btn("Check connection", CheckConnection);
-        _startStreams = Btn("Start displays", StartSelected);
-        _stopStreams = Btn("Stop displays", StopSelected);
+        _startStreams = Btn("Connect to laptop", StartSelected);
+        _stopStreams = Btn("Disconnect", StopSelected);
         col.Controls.Add(Row(_check, _startStreams, _stopStreams));
+        _connState = new Label { AutoSize = true, MaximumSize = new Size(700, 0) };
+        col.Controls.Add(_connState);
         _clientStatus = new Label { AutoSize = true, MaximumSize = new Size(700, 0) };
         col.Controls.Add(_clientStatus);
 
@@ -404,6 +406,16 @@ public sealed partial class SettingsForm
         _startStreams.Enabled = hasSelection && _selected != null;
         _stopStreams.Enabled = hasSelection && _selected != null;
         _streams.Enabled = hasSelection && _selected != null;
+        // the connection now, and which displays are in use: pairing covers all of the laptop's displays, so the spare ones are said
+        if (_selected != null)
+        {
+            var shown = _app.Client.Status(_selected).Count(s => s.Running);
+            var inUse = _selected.Streams.Count(s => s.Enabled);
+            var total = _selected.Streams.Count;
+            _connState.Text = (shown > 0 ? $"Connected: {shown} display(s) of the laptop shown on this PC." : "Not connected.") +
+                (_selected.Paired ? $"  Paired with Moonlight: {total} display(s) of the laptop, {inUse} in use for this PC's screens, {total - inUse} spare." : "");
+        }
+        else _connState.Text = "";
         _monitors.Text = string.Join("\n", ClientService.Monitors().Select(m => $"{m.Index}: {m.Bounds.Width}x{m.Bounds.Height} at ({m.Bounds.X},{m.Bounds.Y}){(m.Primary ? "  [primary]" : "")}"));
 
         RefreshLaptops();

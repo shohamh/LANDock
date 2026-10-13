@@ -378,10 +378,16 @@ public sealed class ClientService
         }
         catch (ControlException e) { Log.Error($"{h.Name}: the displays could not be started: {e.Message}", null); }
 
+        var inUse = all.Count(s => s.Enabled && ScreenOf(s, mons) != null);
+        Log.Info($"{h.Name}: pairing all {all.Count} displays of the laptop: {inUse} for this PC's screens, {all.Count - inUse} spare " +
+                 "(a screen added later then needs no PIN)");
         var bad = 0;
+        var done = 0;
         foreach (var s in all)
         {
             EnsureStream(h, s);
+            done++;
+            Log.Info($"{h.Name} {s.Name}: pairing {done} of {all.Count}...");
             if (await PairOneAsync(h, s, pin!)) Log.Info($"{h.Name} {s.Name}: paired");
             else bad++;
         }

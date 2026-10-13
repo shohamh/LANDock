@@ -146,6 +146,28 @@ public class LaptopLayoutTests
     }
 
     [Fact]
+    public void The_group_origin_is_where_the_desktop_is_drawn_and_moved()
+    {
+        // the settings draw the desktop from GroupOrigin; the moves use the same origin
+        Assert.Equal((1920, 0), LaptopLayout.GroupOrigin(Laptop, Desktop, LaptopPlacement.Left));
+        Assert.Equal((-3000, 0), LaptopLayout.GroupOrigin(Laptop, Desktop, LaptopPlacement.Right));
+        Assert.Equal((-540, -1920), LaptopLayout.GroupOrigin(Laptop, Desktop, LaptopPlacement.BelowCentered));
+        Assert.Equal((-1080, -1920), LaptopLayout.GroupOrigin(Laptop, Desktop, LaptopPlacement.BelowRight));
+        // the leftmost screen (1080 tall) is the one over the laptop: the desktop moves down to it
+        Assert.Equal((0, -1080), LaptopLayout.GroupOrigin(Laptop, Desktop, LaptopPlacement.BelowLeft));
+    }
+
+    [Fact]
+    public void Each_screen_gets_a_laptop_display_in_left_to_right_order()
+    {
+        // the screens in any order: the first one from the left gets the first display
+        var screens = new List<MonitorOffer> { new("B", 1920, 0, 1080, 1920, 90, false), new("A", 0, 0, 1920, 1080, 0, true) };
+        var got = NoticeService.DisplaysFor(screens).Select(x => (x.Label, x.Screen.Id)).ToList();
+        Assert.Equal((HostPlanning.AllInstances[0].Label, "A"), got[0]);
+        Assert.Equal((HostPlanning.AllInstances[1].Label, "B"), got[1]);
+    }
+
+    [Fact]
     public void Names_parse_and_default_to_the_current_behaviour()
     {
         Assert.Equal(LaptopPlacement.BelowRight, LaptopLayout.ParsePlacement("below-right"));

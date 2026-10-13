@@ -704,7 +704,8 @@ public sealed class HostService : IDisposable
         LaptopLayout.DuplicateScreen(report ?? new List<MonitorOffer>(), LayoutOf(desktop).duplicate)?.Id;
 
     /// <summary>The placement and the copy for a desktop: its own choice, else the general one.</summary>
-    private (LaptopPlacement placement, DuplicateTarget duplicate) LayoutOf(HostIdentity.PairedDesktop? d) =>
+    /// <summary>The placement and the duplicate that apply to a desktop (its own choice, else the general one).</summary>
+    public (LaptopPlacement placement, DuplicateTarget duplicate) LayoutOf(HostIdentity.PairedDesktop? d) =>
         (LaptopLayout.ParsePlacement(d?.Placement ?? _settings.Host.LaptopPlacement),
          LaptopLayout.ParseDuplicate(d?.Duplicate ?? _settings.Host.LaptopDuplicate));
 
