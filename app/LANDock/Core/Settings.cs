@@ -83,6 +83,9 @@ public sealed class ClientSettings
     /// <summary>"fullscreen" or "windowed" (a stream can override it).</summary>
     public string DisplayMode { get; set; } = "fullscreen";
     public bool AutoStartStreams { get; set; }
+    /// <summary>One display (one connection to the laptop) for each connected screen, turned on automatically when displays start.
+    /// Off: only the displays turned on in the Client tab run.</summary>
+    public bool AutoDisplays { get; set; } = true;
     public List<HostProfile> Hosts { get; set; } = new();
 
     [JsonIgnore]
@@ -101,6 +104,15 @@ public sealed class HostSettings
     public int ControlPort { get; set; }
     /// <summary>Listen on the microphone for the ultrasound of nearby desktops (off by default: it uses the microphone).</summary>
     public bool ListenUltrasound { get; set; }
+    /// <summary>Show a small notice above the taskbar when a paired desktop is recognized (over LAN or ultrasound).</summary>
+    public bool ShowNotices { get; set; } = true;
+    /// <summary>How long the notice's Snooze button hides it for.</summary>
+    public int NoticeSnoozeMinutes { get; set; } = 10;
+    /// <summary>Where the laptop's screen sits in relation to the desktop's screens: "left" (the desktop is to its right, the default
+    /// of earlier versions), "right", "below-centered", "below-right" or "below-left". Overridden per desktop.</summary>
+    public string LaptopPlacement { get; set; } = "left";
+    /// <summary>Which desktop screen shows a copy of the laptop's screen: "none", "primary" or "largest". Overridden per desktop.</summary>
+    public string LaptopDuplicate { get; set; } = "none";
 }
 
 public sealed class UpdateSettings

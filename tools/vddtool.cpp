@@ -48,6 +48,10 @@ int main(int argc, char **argv) {
   }
   if (cmd == "layout") {
     // vddtool layout <DISPLAYn>=<x>,<y> ...   (e.g. DISPLAY6=1920,0)
+    // the same lock as the program's display changes (see DisplayConfigLock in the Apollo source): a configuration write of another
+    // instance in between would put back the old positions
+    HANDLE configLock = CreateMutexW(nullptr, FALSE, L"Local\\LANDockDisplayConfig");
+    if (configLock) WaitForSingleObject(configLock, 30000);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     for (int i = 2; i < argc; ++i) {
       std::string a = argv[i];
@@ -57,13 +61,19 @@ int main(int argc, char **argv) {
       LONG x = std::stol(a.substr(eq + 1, cm - eq - 1)), y = std::stol(a.substr(cm + 1));
       DEVMODEW dm {}; dm.dmSize = sizeof(dm);
       if (!EnumDisplaySettingsW(name.c_str(), ENUM_CURRENT_SETTINGS, &dm)) { std::printf("%ls: cannot read settings\n", name.c_str()); continue; }
-      dm.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT;
+      // the orientation is part of the mode: without DM_DISPLAYORIENTATION Windows resets a portrait display to landscape
+      // (dm already holds the current orientation, so it is kept)
+      dm.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYORIENTATION;
       dm.dmPosition.x = x; dm.dmPosition.y = y;
       LONG r = ChangeDisplaySettingsExW(name.c_str(), &dm, nullptr, CDS_UPDATEREGISTRY | CDS_NORESET, nullptr);
       std::printf("%ls -> (%ld,%ld) = %ld\n", name.c_str(), x, y, r);
     }
     LONG r = ChangeDisplaySettingsExW(nullptr, nullptr, nullptr, 0, nullptr);
     std::printf("apply = %ld\n", r);
+    if (configLock) {
+      ReleaseMutex(configLock);
+      CloseHandle(configLock);
+    }
     return r == DISP_CHANGE_SUCCESSFUL ? 0 : 1;
   }
   if (cmd == "clone") {

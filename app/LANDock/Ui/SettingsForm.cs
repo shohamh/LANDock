@@ -17,7 +17,8 @@ public sealed partial class SettingsForm : Form
     // host tab
     private Label _driverNote = null!, _hostState = null!, _pin = null!, _pinInfo = null!, _addresses = null!, _control = null!, _firewall = null!;
     private Button _hostToggle = null!, _newPin = null!, _fwButton = null!;
-    private CheckBox _hostAuto = null!, _keepAwake = null!;
+    private CheckBox _hostAuto = null!, _keepAwake = null!, _showNotices = null!;
+    private ComboBox _placeGeneral = null!, _copyGeneral = null!;
     private NumericUpDown _pairMinutes = null!;
     private ListView _instances = null!;
 
@@ -132,8 +133,19 @@ public sealed partial class SettingsForm : Form
         _hostAuto = new CheckBox { Text = "Start the host automatically when LANDock starts", AutoSize = true };
         _keepAwake = new CheckBox { Text = "Keep this laptop awake while the host runs (a locked laptop cannot be controlled)", AutoSize = true };
         _pairMinutes = new NumericUpDown { Minimum = 1, Maximum = 120, Width = 60 };
+        _showNotices = new CheckBox { Text = "Show a small notice above the taskbar when a paired desktop is nearby (it never takes the focus)", AutoSize = true };
         col.Controls.Add(_hostAuto);
         col.Controls.Add(_keepAwake);
+        col.Controls.Add(_showNotices);
+        _placeGeneral = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
+        _copyGeneral = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
+        LayoutChoices.Fill(_placeGeneral, LayoutChoices.Placements(withDefault: false));
+        LayoutChoices.Fill(_copyGeneral, LayoutChoices.Copies(withDefault: false));
+        _placeGeneral.SelectedIndexChanged += (_, _) => SaveGeneralLayout();
+        _copyGeneral.SelectedIndexChanged += (_, _) => SaveGeneralLayout();   // writes only when a value really changed
+        col.Controls.Add(Row(new Label { Text = "Laptop screen sits (general):", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _placeGeneral));
+        col.Controls.Add(Row(new Label { Text = "Copy the laptop screen onto (general):", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _copyGeneral));
+        col.Controls.Add(new Label { Text = "These apply to every desktop unless a desktop has its own layout (Desktop PCs, below).", AutoSize = true, ForeColor = SystemColors.GrayText });
         col.Controls.Add(Row(new Label { Text = "Pairing window:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _pairMinutes, new Label { Text = "minutes after the host starts", AutoSize = true, Margin = new Padding(4, 6, 0, 0) }));
 
         _instances = new ListView { View = View.Details, Width = 700, Height = 100, FullRowSelect = true, GridLines = true };
@@ -270,6 +282,9 @@ public sealed partial class SettingsForm : Form
     private void LoadSettings()
     {
         _hostAuto.Checked = S.Host.AutoStart; _keepAwake.Checked = S.Host.KeepAwake; _pairMinutes.Value = S.Host.PairingWindowMinutes;
+        _showNotices.Checked = S.Host.ShowNotices;
+        _placeGeneral.SelectedIndex = LayoutChoices.IndexOf(LayoutChoices.Placements(withDefault: false), S.Host.LaptopPlacement);
+        _copyGeneral.SelectedIndex = LayoutChoices.IndexOf(LayoutChoices.Copies(withDefault: false), S.Host.LaptopDuplicate);
         LoadClient();
         LoadListen();
         LoadSound();
@@ -286,6 +301,7 @@ public sealed partial class SettingsForm : Form
     public void SaveSettings(bool announce)
     {
         S.Host.AutoStart = _hostAuto.Checked; S.Host.KeepAwake = _keepAwake.Checked; S.Host.PairingWindowMinutes = (int)_pairMinutes.Value;
+        S.Host.ShowNotices = _showNotices.Checked;
         SaveClientFromForm();
         S.Updates.Enabled = _updEnabled.Checked; S.Updates.IntervalMinutes = (int)_updInterval.Value;
         S.Updates.Mode = _updAuto.Checked ? "auto" : "ask"; S.Updates.IncludePrereleases = _updPre.Checked;

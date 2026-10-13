@@ -28,18 +28,8 @@ public static class HostSetup
         {
             var dir = Paths.InstanceDir(inst.Key);
             Directory.CreateDirectory(dir);
-            var conf = new StringBuilder()
-                .AppendLine($"sunshine_name = LANDock-{inst.Key.ToUpperInvariant()}")
-                .AppendLine($"port = {inst.Port}")
-                .AppendLine($"file_apps = {Paths.Fwd(Paths.AppsJson)}")
-                .AppendLine($"file_state = {Paths.Fwd(Path.Combine(dir, "state.json"))}")
-                .AppendLine($"credentials_file = {Paths.Fwd(Path.Combine(dir, "web-credentials.json"))}")
-                .AppendLine($"log_path = {Paths.Fwd(Paths.InstanceLog(inst.Key))}")
-                .AppendLine($"pkey = {Paths.Fwd(Path.Combine(dir, "cakey.pem"))}")
-                .AppendLine($"cert = {Paths.Fwd(Path.Combine(dir, "cacert.pem"))}")
-                .AppendLine("origin_web_ui_allowed = pc")   // the web UI answers on this computer only
-                .ToString();
-            File.WriteAllText(Paths.InstanceConf(inst.Key), conf);
+            File.WriteAllText(Paths.InstanceConf(inst.Key), ConfText(inst, dir, Paths.AppsJson, null));
+            SeedIdentity(Path.Combine(dir, "state.json"));
 
             if (!File.Exists(Path.Combine(dir, "web-credentials.json")))
             {
@@ -55,6 +45,48 @@ public static class HostSetup
                 if (!p.WaitForExit(30_000)) { try { p.Kill(true); } catch { } }
             }
         }
+    }
+
+    /// <summary>
+    /// The config of an instance that shows a copy of the laptop's own screen instead of a virtual display: it captures the screen
+    /// 'output' (output_name), and its app does not create a virtual display (apps-copy.json: virtual-display false). The instance
+    /// reads its config when it starts, so the caller restarts it.
+    /// </summary>
+    public static void WriteCopyConf(Instance inst, string output)
+    {
+        var dir = Paths.InstanceDir(inst.Key);
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Paths.AppsCopyJson, File.ReadAllText(Paths.AppsJson).Replace("\"virtual-display\": true", "\"virtual-display\": false"));
+        File.WriteAllText(Paths.InstanceConfCopy(inst.Key), ConfText(inst, dir, Paths.AppsCopyJson, output));
+    }
+
+    private static string ConfText(Instance inst, string dir, string appsFile, string? output)
+    {
+        var conf = new StringBuilder()
+            .AppendLine($"sunshine_name = LANDock-{inst.Key.ToUpperInvariant()}")
+            .AppendLine($"port = {inst.Port}")
+            .AppendLine($"file_apps = {Paths.Fwd(appsFile)}")
+            .AppendLine($"file_state = {Paths.Fwd(Path.Combine(dir, "state.json"))}")
+            .AppendLine($"credentials_file = {Paths.Fwd(Path.Combine(dir, "web-credentials.json"))}")
+            .AppendLine($"log_path = {Paths.Fwd(Paths.InstanceLog(inst.Key))}")
+            .AppendLine($"pkey = {Paths.Fwd(Path.Combine(dir, "cakey.pem"))}")
+            .AppendLine($"cert = {Paths.Fwd(Path.Combine(dir, "cacert.pem"))}")
+            .AppendLine("origin_web_ui_allowed = pc");   // the web UI answers on this computer only
+        if (output != null) conf.AppendLine($"output_name = {output}");
+        return conf.ToString();
+    }
+
+    /// <summary>
+    /// Apollo only writes its state file (and so its identity, the unique id that the desktops' Moonlight copies remember)
+    /// after a desktop has paired. Until then every start made a new id, so a desktop that had seen the instance once
+    /// found it "unexpected" and showed it offline. A fixed id is written once, before the first start.
+    /// </summary>
+    private static void SeedIdentity(string stateFile)
+    {
+        if (File.Exists(stateFile)) return;
+        var id = Guid.NewGuid().ToString("D").ToUpperInvariant();
+        File.WriteAllText(stateFile, $"{{\"root\":{{\"uniqueid\":\"{id}\",\"named_devices\":[]}}}}");
+        Log.Info($"gave {Path.GetFileName(Path.GetDirectoryName(stateFile))} a fixed identity");
     }
 
     /// <summary>The laptop's IPv4 addresses on real networks: what the desktop PC types as host address.</summary>

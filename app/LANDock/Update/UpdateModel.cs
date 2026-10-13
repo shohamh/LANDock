@@ -78,12 +78,16 @@ public static class SemVer
 public static class UpdatePlanner
 {
     /// <summary>
-    /// What needs updating. The program itself updates when the release is newer. The host and client parts update when their
-    /// content id differs from the installed one; a part that is not installed on this computer is never added by an update.
+    /// What needs updating. Only ever to a higher version: the program updates when the release is newer than the installed one.
+    /// The host and client parts have content ids (the pinned source commit), which have no order, so they are only offered
+    /// together with a newer release, and only when their id differs; a part that is not installed on this computer is never
+    /// added by an update, and an older release never brings a part back.
     /// </summary>
     public static List<PendingUpdate> Plan(UpdateManifest m, string installedApp, string installedHost, string installedClient)
     {
         var res = new List<PendingUpdate>();
+        var releaseIsNewer = SemVer.Compare(m.Version, installedApp) > 0;
+        if (!releaseIsNewer) return res;
         if (m.Components.TryGetValue("host", out var h) && installedHost != "" && !string.Equals(h.Version, installedHost, StringComparison.OrdinalIgnoreCase))
             res.Add(new PendingUpdate("host", installedHost, h.Version, h));
         if (m.Components.TryGetValue("client", out var c) && installedClient != "" && !string.Equals(c.Version, installedClient, StringComparison.OrdinalIgnoreCase))

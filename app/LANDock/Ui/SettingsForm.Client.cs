@@ -10,7 +10,7 @@ namespace LANDock.Ui;
 /// </summary>
 public sealed partial class SettingsForm
 {
-    private CheckBox _discoverLan = null!, _discoverUltra = null!, _autoConnect = null!;
+    private CheckBox _discoverLan = null!, _discoverUltra = null!, _autoConnect = null!, _autoDisplays = null!;
     private Label _finderStatus = null!;
     private ListView _laptops = null!;
     private Button _pairBtn = null!, _favBtn = null!, _upBtn = null!, _downBtn = null!, _renameBtn = null!, _removeBtn = null!,
@@ -40,6 +40,16 @@ public sealed partial class SettingsForm
         col.Controls.Add(_autoConnect);
         _finderStatus = new Label { AutoSize = true, MaximumSize = new Size(700, 0), Margin = new Padding(0, 4, 0, 4) };
         col.Controls.Add(_finderStatus);
+
+        col.Controls.Add(Heading("Displays"));
+        _autoDisplays = new CheckBox { Text = "One display for each connected screen, turned on automatically when the displays start", AutoSize = true };
+        _autoDisplays.CheckedChanged += (_, _) =>
+        {
+            if (_loadingClient) return;
+            S.Client.AutoDisplays = _autoDisplays.Checked;
+            S.Save();
+        };
+        col.Controls.Add(_autoDisplays);
 
         col.Controls.Add(Heading("Laptops, in the order they are tried"));
         col.Controls.Add(Note("Nearby laptops (heard this PC's sound) come first, then the ones seen most recently, then favorites, then the order you set with Move up and Move down. " +
@@ -126,6 +136,7 @@ public sealed partial class SettingsForm
         _discoverLan.Checked = S.Client.DiscoverLan;
         _discoverUltra.Checked = S.Client.DiscoverUltrasound;
         _autoConnect.Checked = S.Client.AutoConnect;
+        _autoDisplays.Checked = S.Client.AutoDisplays;
         _displayMode.SelectedItem = S.Client.DisplayMode;
         _loadingClient = false;
         RefreshClient();

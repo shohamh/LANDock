@@ -44,6 +44,20 @@ public static class HostPlanning
         return res;
     }
 
+    /// <summary>True while a client is connected to the instance: its last "CLIENT CONNECTED" is after its last "CLIENT DISCONNECTED" (read from its log lines).
+    /// A display that is kept and reused does not show its end in the log, so the connections are what tell a running stream.</summary>
+    public static bool StreamRunning(IEnumerable<string> logLines)
+    {
+        int i = 0, connected = -1, disconnected = -1;
+        foreach (var l in logLines)
+        {
+            if (l.Contains("CLIENT CONNECTED")) connected = i;
+            if (l.Contains("CLIENT DISCONNECTED")) disconnected = i;
+            i++;
+        }
+        return connected > disconnected;
+    }
+
     /// <summary>The display an instance created for its current stream, or null once that stream has ended (read from its log lines).</summary>
     public static string? ActiveDisplay(IEnumerable<string> logLines)
     {

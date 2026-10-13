@@ -71,7 +71,8 @@ public class UpdaterTests : IDisposable
     {
         var manifest = new UpdateManifest
         {
-            Version = tag.TrimStart('v'), Tag = tag, Notes = "notes",
+            // newer than any build of the test host (its version is the test runner's, 17.x), so the release counts as an update
+            Version = "999.0.0", Tag = tag, Notes = "notes",
             Components = { ["host"] = new ComponentInfo { Version = hostVersion, File = "host.zip", Sha256 = shaOverride ?? Sha(hostZip), Size = hostZip.Length } },
         };
         var gh = new FakeGitHub();

@@ -16,6 +16,8 @@ app/**/obj/
 lab/
 # a local Apollo checkout used while developing
 vendor/
+# the Claude Code session folder (settings, memory, transcripts)
+.claude/
 # downloaded Moonlight copies and build inputs
 deps/
 # old experiment folder (see lab/)

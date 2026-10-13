@@ -7,6 +7,7 @@ namespace LANDock.Client;
 public sealed record RemoteIdentity(string HostId, string HostName, string Version, string Fingerprint, bool PairingOpen, int ControlPort);
 public sealed record RemotePairing(string Token, string HostId, string HostName, List<RemoteStream> Streams);
 public sealed record RemoteStream(string Name, int Port, int Width, int Height, int Fps);
+public sealed class HeartbeatReply { public bool Ok { get; set; } }
 public sealed record DisplayOffer(string Name, int Width, int Height, int Fps, string? ScreenId = null);
 
 /// <summary>A failure the user should read: wrong PIN, pairing closed, certificate changed, host not reachable...</summary>
@@ -43,7 +44,7 @@ public sealed class ControlClient : IDisposable
             },
         };
         var host = address.Contains(':') && !address.StartsWith('[') ? $"[{address}]" : address;
-        _http = new HttpClient(handler) { BaseAddress = new Uri($"https://{host}:{port}"), Timeout = TimeSpan.FromSeconds(10) };
+        _http = new HttpClient(handler) { BaseAddress = new Uri($"https://{host}:{port}"), Timeout = Timeout.InfiniteTimeSpan };   // each call has its own limit (SendAsync)
     }
 
     public Task<RemoteIdentity> IdentityAsync(CancellationToken ct = default) =>
@@ -56,16 +57,25 @@ public sealed class ControlClient : IDisposable
     /// <param name="monitors">The screens this PC uses (plan-monitor-layout.md). Null leaves the report out, as an older PC does.</param>
     public Task<List<RemoteStream>> SessionAsync(string token, IEnumerable<DisplayOffer> offers, string ultraId,
         IEnumerable<LANDock.Host.MonitorOffer>? monitors = null, CancellationToken ct = default) =>
+        // the laptop starts the displays this desktop asks for before it answers: each instance takes a few seconds, so the
+        // session call has more time than the other calls (a 10 s limit made pairing fail while the instances were starting)
         SendAsync<List<RemoteStream>>(HttpMethod.Post, "/api/session",
-            new { streams = offers.ToList(), ultraId, monitors = monitors?.ToList() }, token, ct);
+            new { streams = offers.ToList(), ultraId, monitors = monitors?.ToList() }, token, ct, TimeSpan.FromSeconds(120));
 
-    private async Task<T> SendAsync<T>(HttpMethod method, string path, object? body, string? token, CancellationToken ct)
+    /// <summary>"Still connected": tells the laptop this PC is using it. Sent every few seconds while a display of the laptop runs.</summary>
+    public Task<HeartbeatReply> HeartbeatAsync(string token, CancellationToken ct = default) =>
+        SendAsync<HeartbeatReply>(HttpMethod.Post, "/api/heartbeat", new { }, token, ct);
+
+    private async Task<T> SendAsync<T>(HttpMethod method, string path, object? body, string? token, CancellationToken ct, TimeSpan? limit = null)
     {
         using var req = new HttpRequestMessage(method, path);
         if (body != null) req.Content = JsonContent.Create(body);
         if (!string.IsNullOrEmpty(token)) req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        using var limited = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        limited.CancelAfter(limit ?? TimeSpan.FromSeconds(10));
+        var call = limited.Token;
         HttpResponseMessage resp;
-        try { resp = await _http.SendAsync(req, ct); }
+        try { resp = await _http.SendAsync(req, call); }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or OperationCanceledException)
         {
             if (_pinned != null && SeenFingerprint != null && !string.Equals(SeenFingerprint, _pinned, StringComparison.OrdinalIgnoreCase))
@@ -75,7 +85,7 @@ public sealed class ControlClient : IDisposable
         }
         using (resp)
         {
-            var text = await resp.Content.ReadAsStringAsync(ct);
+            var text = await resp.Content.ReadAsStringAsync(call);
             if (!resp.IsSuccessStatusCode)
             {
                 var msg = "";

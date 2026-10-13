@@ -100,6 +100,15 @@ Type: filesandordirs; Name: "{app}\client"
 Type: files; Name: "{app}\LANDock.exe.old"
 
 [Code]
+// a helper of the host (vddtool) that is still running keeps its file open, and Setup then cannot replace it: end it first
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  rc: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM vddtool.exe', '', SW_HIDE, ewWaitUntilTerminated, rc);
+  Result := '';
+end;
+
 function FirewallRuleExists(RuleName: String): Boolean;
 var
   rc: Integer;

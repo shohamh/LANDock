@@ -47,13 +47,21 @@ public class UpdatePlannerTests
     [Fact]
     public void A_part_that_is_not_installed_is_not_added_by_an_update()
     {
-        var plan = UpdatePlanner.Plan(Manifest("0.2.0", "h2", "c2"), "0.2.0", "", "c1");
-        Assert.Equal(new[] { "client" }, plan.Select(p => p.Component).ToArray());
+        var plan = UpdatePlanner.Plan(Manifest("0.2.1", "h2", "c2"), "0.2.0", "", "c1");
+        Assert.Equal(new[] { "client", "app" }, plan.Select(p => p.Component).ToArray());
     }
 
     [Fact]
     public void An_older_release_never_downgrades_the_program() =>
         Assert.Empty(UpdatePlanner.Plan(Manifest("0.1.0", "h1", "c1"), "0.2.0", "h1", "c1"));
+
+    [Fact]
+    public void An_older_release_never_brings_back_an_older_part() =>
+        Assert.Empty(UpdatePlanner.Plan(Manifest("0.1.0", "h1", "c1"), "0.2.0", "h2", "c2"));
+
+    [Fact]
+    public void The_same_release_with_a_different_part_is_not_an_update() =>
+        Assert.Empty(UpdatePlanner.Plan(Manifest("0.2.0", "h2", "c2"), "0.2.0", "h1", "c1"));
 
     [Fact]
     public void Manifest_json_round_trips()
@@ -88,6 +96,16 @@ public class HostPlanningTests
         Assert.Equal("DISPLAY7", HostPlanning.ActiveDisplay(log));
         Assert.Null(HostPlanning.ActiveDisplay(log.Take(2)));
         Assert.Null(HostPlanning.ActiveDisplay(Array.Empty<string>()));
+    }
+
+    [Fact]
+    public void A_stream_runs_while_its_last_connection_has_no_disconnect_after_it()
+    {
+        // a display that is kept and reused shows no removal, so the connections tell whether a stream runs
+        var log = new[] { "CLIENT CONNECTED", "CLIENT DISCONNECTED", "CLIENT CONNECTED" };
+        Assert.True(HostPlanning.StreamRunning(log));
+        Assert.False(HostPlanning.StreamRunning(log.Concat(new[] { "CLIENT DISCONNECTED" })));
+        Assert.False(HostPlanning.StreamRunning(Array.Empty<string>()));
     }
 
     [Fact]

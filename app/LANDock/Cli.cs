@@ -110,17 +110,20 @@ internal static class Cli
         {
             case "up":
             {
-                using var mutex = new Mutex(true, @"Local\LANDock.Host." + Paths.InstanceId, out var first);
-                if (!first) { Console.WriteLine("a host is already running (LANDock tray or another window)"); return 1; }
+                // the host itself holds the one-host mutex and watches the stop signal (HostService.StartAsync)
                 using var stop = new EventWaitHandle(false, EventResetMode.ManualReset, @"Local\LANDock.HostStop");
                 stop.Reset();
                 using var host = new HostService(settings);
                 var cancel = new ManualResetEvent(false);
                 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancel.Set(); };
+                // "host down" or Ctrl+C cancels the start while it runs; once the host is up they are handled below (the host's
+                // own token must not be cancelled by them, or its watchers end while it still runs)
                 using var startCts = new CancellationTokenSource();
-                _ = Task.Run(() => { WaitHandle.WaitAny(new WaitHandle[] { stop, cancel }); startCts.Cancel(); });   // "host down" also works while it is still starting
-                try { await host.StartAsync(startCts.Token); }
+                var started = false;
+                _ = Task.Run(() => { WaitHandle.WaitAny(new WaitHandle[] { stop, cancel }); if (!started) startCts.Cancel(); });
+                try { await host.StartAsync(startCts.Token); started = true; }
                 catch (OperationCanceledException) { Console.WriteLine("stopped before the host was ready"); return 0; }
+                catch (InvalidOperationException ex) { Console.WriteLine(ex.Message); return 1; }
                 var pinFile = Opt(args, "--pin-file");
                 if (pinFile != null) File.WriteAllText(pinFile, host.Pin);
                 Console.WriteLine();
@@ -129,7 +132,8 @@ internal static class Cli
                 foreach (var a in HostSetup.LocalAddresses()) Console.WriteLine($"  {a.address}  ({a.name})");
                 Console.WriteLine($"Pairing PIN for this session: {host.Pin}   (new clients can pair for the next {settings.Host.PairingWindowMinutes} minutes)");
                 Console.WriteLine("Host is ready. Press Ctrl+C or run \"LANDock host down\" to stop.");
-                WaitHandle.WaitAny(new WaitHandle[] { stop, cancel });
+                // until "host down" or Ctrl+C: the host ends itself on "host down" (its stop watcher), so the loop checks it too
+                while (host.Running && !cancel.WaitOne(500)) { }
                 await host.StopAsync();
                 return 0;
             }
@@ -137,8 +141,18 @@ internal static class Cli
             {
                 using var stop = new EventWaitHandle(false, EventResetMode.ManualReset, @"Local\LANDock.HostStop");
                 stop.Set();
-                Console.WriteLine("asked the running host to stop");
-                return 0;
+                // the host still holds its single-instance mutex until it has really stopped: wait for that, so a "host up" right
+                // after this one is not refused as "already running"
+                using var running = new Mutex(false, @"Local\LANDock.Host." + Paths.InstanceId);
+                var gone = false;
+                for (var i = 0; i < 120 && !gone; i++)
+                {
+                    try { gone = running.WaitOne(TimeSpan.FromMilliseconds(500)); }
+                    catch (AbandonedMutexException) { gone = true; }   // the host ended without releasing it: it is gone too
+                    if (gone) running.ReleaseMutex();
+                }
+                Console.WriteLine(gone ? "the host stopped" : "asked the running host to stop (it is still shutting down)");
+                return gone ? 0 : 1;
             }
             case "cleanup":
                 HostService.StopLeftovers();

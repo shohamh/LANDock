@@ -15,6 +15,63 @@ public sealed partial class SettingsForm
     private DataGridView _policy = null!;
     private Button _savePolicy = null!;
     private Label _policyNote = null!;
+    private ComboBox _layoutPlace = null!, _layoutCopy = null!;
+    private Button _saveLayout = null!;
+    private Label _layoutNote = null!;
+
+    /// <summary>The general layout choices as the settings keep them (the value; null in a list = "the general setting").</summary>
+    internal static class LayoutChoices
+    {
+        public static List<(string label, string? value)> Placements(bool withDefault)
+        {
+            var list = new List<(string, string?)>
+            {
+                ("Laptop to the left of the desktop's screens", "left"),
+                ("Laptop to the right of the desktop's screens", "right"),
+                ("Laptop below the desktop's screens, centred", "below-centered"),
+                ("Laptop below the rightmost screen", "below-right"),
+                ("Laptop below the leftmost screen", "below-left"),
+            };
+            if (withDefault) list.Insert(0, ("Same as the general setting", null));
+            return list;
+        }
+
+        public static List<(string label, string? value)> Copies(bool withDefault)
+        {
+            var list = new List<(string, string?)>
+            {
+                ("No copy", "none"),
+                ("The desktop's primary screen", "primary"),
+                ("The desktop's largest screen", "largest"),
+            };
+            if (withDefault) list.Insert(0, ("Same as the general setting", null));
+            return list;
+        }
+
+        public static void Fill(ComboBox box, IEnumerable<(string label, string? value)> choices)
+        {
+            box.Items.Clear();
+            foreach (var c in choices) box.Items.Add(c.label);
+        }
+
+        /// <summary>The position of the value in the list (0 when it is not there: the first choice).</summary>
+        public static int IndexOf(IEnumerable<(string label, string? value)> choices, string? value)
+        {
+            var i = choices.ToList().FindIndex(c => c.value == value);
+            return i < 0 ? 0 : i;
+        }
+    }
+
+    /// <summary>Saves the general layout when a choice changed (the combos also fire while the settings load).</summary>
+    private void SaveGeneralLayout()
+    {
+        var place = LayoutChoices.Placements(false)[Math.Max(0, _placeGeneral.SelectedIndex)].value ?? "left";
+        var copy = LayoutChoices.Copies(false)[Math.Max(0, _copyGeneral.SelectedIndex)].value ?? "none";
+        if (S.Host.LaptopPlacement == place && S.Host.LaptopDuplicate == copy) return;
+        S.Host.LaptopPlacement = place;
+        S.Host.LaptopDuplicate = copy;
+        S.Save();
+    }
 
     private void BuildDesktopsBox(FlowLayoutPanel col)
     {
@@ -26,6 +83,7 @@ public sealed partial class SettingsForm
         {
             _forget.Enabled = _desktops.SelectedItems.Count > 0;
             LoadPolicy();
+            LoadLayout();
         };
         col.Controls.Add(_desktops);
         _forget = new Button { Text = "Forget selected desktop", AutoSize = true, MinimumSize = new Size(190, 28), Enabled = false };
@@ -55,6 +113,45 @@ public sealed partial class SettingsForm
         _policyNote = new Label { AutoSize = true, MaximumSize = new Size(700, 0), ForeColor = SystemColors.GrayText };
         col.Controls.Add(Row(_savePolicy));
         col.Controls.Add(_policyNote);
+
+        col.Controls.Add(Heading("Laptop layout for the selected desktop"));
+        _layoutPlace = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
+        _layoutCopy = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
+        LayoutChoices.Fill(_layoutPlace, LayoutChoices.Placements(withDefault: true));
+        LayoutChoices.Fill(_layoutCopy, LayoutChoices.Copies(withDefault: true));
+        col.Controls.Add(Row(new Label { Text = "Laptop screen sits:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _layoutPlace));
+        col.Controls.Add(Row(new Label { Text = "Copy the laptop screen onto:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _layoutCopy));
+        _saveLayout = new Button { Text = "Save layout for this desktop", AutoSize = true, MinimumSize = new Size(200, 28), Enabled = false };
+        _saveLayout.Click += (_, _) => SaveLayout();
+        _layoutNote = new Label { AutoSize = true, MaximumSize = new Size(700, 0), ForeColor = SystemColors.GrayText };
+        col.Controls.Add(Row(_saveLayout));
+        col.Controls.Add(_layoutNote);
+    }
+
+    /// <summary>Shows the layout the selected desktop has (its own, or the general one).</summary>
+    private void LoadLayout()
+    {
+        var name = SelectedDesktop();
+        _saveLayout.Enabled = name != null;
+        if (name == null) { _layoutNote.Text = ""; return; }
+        var d = HostIdentity.Desktops().FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        _layoutPlace.SelectedIndex = LayoutChoices.IndexOf(LayoutChoices.Placements(true), d?.Placement);
+        _layoutCopy.SelectedIndex = LayoutChoices.IndexOf(LayoutChoices.Copies(true), d?.Duplicate);
+        var own = d?.Placement != null || d?.Duplicate != null;
+        _layoutNote.Text = own
+            ? $"'{name}' has its own layout. Choose 'Same as the general setting' to use the general one."
+            : $"'{name}' uses the general layout from the Host tab.";
+    }
+
+    private void SaveLayout()
+    {
+        var name = SelectedDesktop();
+        if (name == null) return;
+        var place = LayoutChoices.Placements(true)[Math.Max(0, _layoutPlace.SelectedIndex)].value;
+        var copy = LayoutChoices.Copies(true)[Math.Max(0, _layoutCopy.SelectedIndex)].value;
+        HostIdentity.SetLayout(name, place, copy);
+        _layoutNote.Text = $"Saved for '{name}'. The laptop lays out the screens with it from now on.";
+        LoadLayout();
     }
 
     /// <summary>The desktop selected in the list, or null.</summary>

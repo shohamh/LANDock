@@ -94,14 +94,25 @@ public sealed class ControlServer : IAsyncDisposable
         {
             var token = BearerToken(ctx);
             if (!_host.IsPaired(token)) return Results.Json(new { error = "this desktop is not paired with the host any more" }, statusCode: StatusCodes.Status401Unauthorized);
+            _host.NoteSession(token);
             if (!string.IsNullOrEmpty(r.UltraId)) HostIdentity.SetUltraId(token, r.UltraId);
             _host.ReportMonitors(token, r.Monitors);
             // the displays a desktop asks for that the laptop does not run yet are started first (plan-monitor-layout.md, step 2)
-            var failed = await _host.EnsureDisplaysAsync(r.Streams ?? new(), ctx.RequestAborted);
+            var copy = _host.CopyScreenFor(HostIdentity.DesktopOfToken(token), r.Monitors ?? _host.ScreensOf(token)?.ToList());
+            var failed = await _host.EnsureDisplaysAsync(r.Streams ?? new(), ctx.RequestAborted, copy);
             if (failed.Count > 0) return Results.Json(new { error = $"could not start {string.Join(", ", failed)} on the laptop (see its log)" }, statusCode: StatusCodes.Status500InternalServerError);
             var (ok, agreed, reason) = _host.Agree(r.Streams ?? new(), token);
             if (!ok) return Results.Json(new { error = reason }, statusCode: StatusCodes.Status400BadRequest);
             return Results.Json(agreed);
+        });
+
+        // "still connected": a paired desktop that is using the laptop says so every few seconds (see ClientService.KeepConnected)
+        app.MapPost("/api/heartbeat", (HttpContext ctx) =>
+        {
+            var token = BearerToken(ctx);
+            if (!_host.IsPaired(token)) return Results.Json(new { error = "this desktop is not paired with the host any more" }, statusCode: StatusCodes.Status401Unauthorized);
+            _host.NoteHeartbeat(token);
+            return Results.Json(new { ok = true });
         });
 
         await app.StartAsync(ct);
@@ -182,15 +193,52 @@ public static class HostIdentity
     /// <remarks>Displays are keyed by the desktop's screen (its MonitorOffer id, plan-monitor-layout.md step 4); entries keyed by
     /// a display name (M1, M2, TV: the choices of older versions) still apply to the streams of that name when no screen matches.
     /// Screens is the screen report the desktop sent last, so the Host tab can show them while the desktop is offline.</remarks>
+    /// <remarks>Placement and Duplicate override the laptop's general layout for this desktop ("left", "right", "below-centered",
+    /// "below-right", "below-left"; "none", "primary", "largest"). null = use the general setting.</remarks>
     public sealed record PairedDesktop(string Name, string TokenHash, string Created, string UltraId = "", List<DisplayPolicy>? Displays = null,
-        List<MonitorOffer>? Screens = null);
+        List<MonitorOffer>? Screens = null, string? Placement = null, string? Duplicate = null);
+
+    /// <summary>Sets (or clears, with null) the layout override of one desktop.</summary>
+    public static void SetLayout(string name, string? placement, string? duplicate)
+    {
+        var list = Desktops();
+        var i = list.FindIndex(d => d.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (i < 0) return;
+        list[i] = list[i] with { Placement = placement, Duplicate = duplicate };
+        SaveDesktops(list);
+    }
+
+    /// <summary>The layout override of the desktop that holds this token (null for none).</summary>
+    public static PairedDesktop? DesktopOfToken(string token)
+    {
+        var h = Hash(token);
+        return Desktops().FirstOrDefault(d => d.TokenHash == h);
+    }
 
     private static string ClientsFile => Path.Combine(Paths.HostState, "paired-desktops.json");
 
+    /// <summary>Set when the file exists but cannot be read: nothing is saved over it then (that would forget every paired desktop).</summary>
+    private static bool _clientsUnreadable;
+
     public static List<PairedDesktop> Desktops()
     {
-        try { return JsonSerializer.Deserialize<List<PairedDesktop>>(File.ReadAllText(ClientsFile)) ?? new(); }
-        catch { return new(); }
+        if (!File.Exists(ClientsFile)) return new();
+        try
+        {
+            var text = File.ReadAllText(ClientsFile).Trim();
+            // a single desktop written without its list brackets (by hand or by a tool) is still that desktop
+            var list = text.StartsWith('{')
+                ? new List<PairedDesktop> { JsonSerializer.Deserialize<PairedDesktop>(text)! }
+                : JsonSerializer.Deserialize<List<PairedDesktop>>(text) ?? new();
+            _clientsUnreadable = false;
+            return list;
+        }
+        catch (Exception ex)
+        {
+            _clientsUnreadable = true;
+            Log.Error($"the paired desktops file cannot be read ({ClientsFile})", ex);
+            return new();
+        }
     }
 
     public static string Hash(string token) => Convert.ToBase64String(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token)));
@@ -257,6 +305,11 @@ public static class HostIdentity
 
     private static void SaveDesktops(List<PairedDesktop> list)
     {
+        if (_clientsUnreadable)
+        {
+            Log.Error("the paired desktops file is not saved: it could not be read, and saving would overwrite the paired desktops", null);
+            return;
+        }
         Directory.CreateDirectory(Paths.HostState);
         File.WriteAllText(ClientsFile, JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true }));
     }

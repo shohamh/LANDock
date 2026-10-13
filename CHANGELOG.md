@@ -6,6 +6,54 @@ a version becomes the text of its GitHub release.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-13
+
+### Added
+- **A notice when a paired desktop is nearby.** A small window above the taskbar (on the left for right-to-left languages)
+  shows the desktop's name and a diagram of its screens (positions, sizes, resolutions). It appears when the laptop hears the
+  desktop's ultrasound or sees it on the LAN, and only for paired desktops that are not connected. It never takes the focus.
+  **Connect** starts the laptop's virtual monitors and asks the desktop to start its Moonlight windows; **Snooze** hides it for
+  10 minutes; **Dismiss** hides it until the desktop has been away. Turn it off in the Host tab.
+
+- **One connection per connected screen.** The desktop turns on a display for each screen it has connected (automatic; a
+  setting in the Client tab turns it off). Connect on the notice starts exactly as many virtual displays on the laptop as the
+  desktop has screens, and the desktop opens one connection for each.
+- **Where the laptop's screen sits.** The laptop's screen can be left, right, below and centred, below the rightmost screen, or
+  below the leftmost screen, relative to the desktop's screens. The laptop's screen stays where Windows keeps the primary
+  screen; the virtual displays move. Set it in the Host tab; a desktop can have its own choice in the Desktop PCs section.
+- **A copy of the laptop's screen on a desktop screen.** The desktop's primary or largest screen can show the laptop's own screen
+  (a stream of the laptop's screen instead of a virtual display). Windows cannot copy a screen across two graphics adapters, so
+  the copy is made by the stream. Changes to the copy take effect at the next connection.
+- **The display setup comes back.** The laptop's display setup from before the first connection is put back when its displays
+  are gone (after the desktop has stopped for about a minute).
+
+### Fixed
+- **A display's Moonlight no longer shows its laptop as offline after a host restart.** The laptop's Apollo instances now keep a
+  fixed identity from their first start (before, it was made new at each start until the first pairing).
+- **Restarting the host right after stopping it** no longer fails with "already running": `host down` waits until the host has
+  stopped.
+- **Pairing no longer fails while the laptop starts its displays.** The desktop waited 10 seconds for the laptop to start all its
+  virtual monitors; that call now has 120 seconds.
+- **`host down` stops a host that runs in the tray.** Before, it only stopped a host started from the command line, and it
+  reported "stopped" anyway.
+- **Updates only go to a higher version.** The host and client parts are offered only with a newer release, so an older release
+  never replaces a newer install.
+- **A portrait virtual display stays portrait when the laptop moves the displays.** Moving a display's position reset its
+  orientation to landscape, and the layout watcher turned it back every few seconds (`vddtool layout` now keeps the orientation).
+- **A below placement puts the desktop's screen over the laptop on the laptop's top edge.** Before, a shorter screen could float
+  above the laptop with a gap, and Windows kept its display where it was. The desktop's screens keep their arrangement.
+- **A display for a screen of another size is made again.** A display the driver keeps was reused with the size of its first stream,
+  so a 1280x1024 screen could get a 1920x1080 display. When an instance's size changes, it restarts and its display is removed first.
+- **Display changes of the instances take turns.** Each instance changes the PC's display configuration by reading all of it and
+  writing all of it back. Two instances doing that at once could put an old mode back (the 1280x1024 screen above). Apollo's
+  display change and `vddtool layout` now wait for each other (a named mutex in the user's session). The Apollo fork's `landock`
+  branch has the change (commit `bffd7ba`).
+- **A display for a portrait desktop screen is turned to portrait** when Apollo brings it up landscape.
+- **A desktop's copy stream keeps the desktop "connected"** while it is open: the desktop sends a heartbeat every few seconds, so
+  the notice no longer comes back for a copy-only desktop.
+- **The host's `vddtool` helper ends with the host.** Its process is in a job object, so a killed host does not leave it running
+  and blocking the installer.
+
 ### Changed
 - **One Moonlight for all displays on the desktop PC.** Every display used to have its own copy of Moonlight, and Windows
   asked about each copy's firewall access (up to six questions, again after every test run). Now all displays share one

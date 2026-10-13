@@ -7,7 +7,7 @@ using Makaretu.Dns;
 namespace LANDock.Discovery;
 
 /// <summary>What a laptop tells the LAN about itself (mDNS / DNS-SD service "_landock._tcp").</summary>
-public sealed record Advert(string HostId, string Name, string Version, int ControlPort, string Pairing, IReadOnlyList<(string id, double db, double ageSeconds)> Heard);
+public sealed record Advert(string HostId, string Name, string Version, int ControlPort, string Pairing, IReadOnlyList<(string id, double db, double ageSeconds)> Heard, IReadOnlyList<string>? Starts = null);
 
 /// <summary>A laptop found on the LAN, as the desktop PC knows it.</summary>
 public sealed class DiscoveredLaptop
@@ -22,6 +22,8 @@ public sealed class DiscoveredLaptop
     /// <summary>When the laptop last said it heard this PC's ultrasound id, and how loud it was (null: not heard).</summary>
     public DateTime? HeardUsAt { get; set; }
     public double HeardUsDb { get; set; }
+    /// <summary>Desktops (their ultrasound ids) that this laptop asks to start their windows now (HostService.RequestStart).</summary>
+    public List<string> StartFor { get; set; } = new();
 }
 
 /// <summary>
@@ -83,13 +85,16 @@ public sealed class LanAdvertiser : IDisposable
         _profile.AddProperty("pairing", advert.Pairing);
         foreach (var h in advert.Heard.Take(8))
             _profile.AddProperty("heard", $"{h.id}:{h.db:0}:{h.ageSeconds:0}");
+        foreach (var id in (advert.Starts ?? Array.Empty<string>()).Take(8))
+            _profile.AddProperty("start", id);
         _sd!.Advertise(_profile);
         _sd.Announce(_profile, 3);
         _lastTxt = Describe(advert);
     }
 
     private static string Describe(Advert a) =>
-        $"{a.HostId}|{a.Name}|{a.Version}|{a.ControlPort}|{a.Pairing}|" + string.Join(";", a.Heard.Take(8).Select(h => $"{h.id}:{h.db:0}:{h.ageSeconds:0}"));
+        $"{a.HostId}|{a.Name}|{a.Version}|{a.ControlPort}|{a.Pairing}|" + string.Join(";", a.Heard.Take(8).Select(h => $"{h.id}:{h.db:0}:{h.ageSeconds:0}"))
+        + "|" + string.Join(";", (a.Starts ?? Array.Empty<string>()).Take(8));
 
     /// <summary>A DNS label: letters, digits and dashes, at most 63 characters.</summary>
     private static string SafeInstance(string name)
@@ -176,7 +181,7 @@ public sealed class LanBrowser : IDisposable
     private static DiscoveredLaptop Copy(DiscoveredLaptop d) => new()
     {
         HostId = d.HostId, Name = d.Name, Version = d.Version, Address = d.Address, ControlPort = d.ControlPort,
-        Pairing = d.Pairing, LastSeen = d.LastSeen, HeardUsAt = d.HeardUsAt, HeardUsDb = d.HeardUsDb,
+        Pairing = d.Pairing, LastSeen = d.LastSeen, HeardUsAt = d.HeardUsAt, HeardUsDb = d.HeardUsDb, StartFor = new List<string>(d.StartFor),
     };
 
     private void Read(Makaretu.Dns.Message msg)
@@ -209,6 +214,7 @@ public sealed class LanBrowser : IDisposable
             d.Address = address;
             d.ControlPort = srv.Port;
             d.LastSeen = DateTime.Now;
+            d.StartFor = props.TryGetValue("start", out var starts) ? starts.Where(x => x != "").ToList() : new List<string>();
             // what the laptop heard, as id:db:age entries; our own id tells us how close this laptop hears us
             d.HeardUsAt = null;
             if (props.TryGetValue("heard", out var heard))

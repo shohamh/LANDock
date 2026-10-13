@@ -17,6 +17,8 @@ public static class VddTool
         };
         foreach (var a in args) psi.ArgumentList.Add(a);
         using var p = Process.Start(psi)!;
+        // in the job of this program: when the program ends, the helper ends too (it cannot be left behind if it hangs)
+        ChildJob.Helpers.Add(p);
         var so = p.StandardOutput.ReadToEndAsync();
         var se = p.StandardError.ReadToEndAsync();
         if (!p.WaitForExit(20_000)) { try { p.Kill(true); } catch { } return (-1, "timeout"); }
@@ -26,10 +28,14 @@ public static class VddTool
     /// <summary>True when the SudoVDA virtual display driver is installed (installing Apollo once adds it).</summary>
     public static bool DriverPresent()
     {
+        if (_driverSeen) return true;   // once seen, it stays installed for this program's run: no helper is started again
         if (!Available) return false;
         var (code, output) = Run("watchdog");
-        return code != -1 && !output.Contains("cannot open SudoVDA device");
+        _driverSeen = code != -1 && !output.Contains("cannot open SudoVDA device");
+        return _driverSeen;
     }
+
+    private static bool _driverSeen;
 
     public const string DriverHelp = "The virtual display driver (SudoVDA) is not installed on this computer. Install Apollo once from "
         + "https://github.com/ClassicOldSong/Apollo/releases (its installer adds the driver), then start the host again. LANDock does not install drivers itself.";

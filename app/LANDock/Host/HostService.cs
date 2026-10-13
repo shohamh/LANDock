@@ -43,12 +43,53 @@ public sealed class HostService : IDisposable
 
     private void Raise() { try { Changed?.Invoke(); } catch { } }
 
+    // one host at a time on this PC (the tray's host or a "host up" window): the mutex is held while the host runs, and "host down"
+    // waits for it to be released. The stop signal ("host down") ends the host wherever it runs.
+    private ManualResetEventSlim? _holdRelease;
+    private EventWaitHandle? _stopSignal;
+
+    /// <summary>
+    /// Takes the one-host mutex and keeps it on a thread of its own until the host stops: a mutex can only be released by the thread
+    /// that took it, and the host stops on another thread. Returns false when another host holds it.
+    /// </summary>
+    private Task<bool> AcquireInstance(string name)
+    {
+        var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new ManualResetEventSlim(false);
+        var holder = new Thread(() =>
+        {
+            try
+            {
+                using var mutex = new Mutex(false, name);
+                bool owned;
+                try { owned = mutex.WaitOne(0); }
+                catch (AbandonedMutexException) { owned = true; }   // the last host ended without releasing it: it is ours now
+                answer.TrySetResult(owned);
+                if (!owned) return;
+                release.Wait();
+                try { mutex.ReleaseMutex(); } catch { }
+            }
+            catch (Exception ex) { answer.TrySetException(ex); }
+        }) { IsBackground = true, Name = "LANDock host instance" };
+        holder.Start();
+        _holdRelease = release;
+        return answer.Task;
+    }
+
+    private void ReleaseInstance()
+    {
+        _holdRelease?.Set();   // the holder thread releases the mutex now; "host down" sees it released
+        _holdRelease = null;
+    }
+
     public async Task StartAsync(CancellationToken external = default)
     {
         if (Running || Starting) return;
         Starting = true; Raise();
         try
         {
+            if (!await AcquireInstance(@"Local\LANDock.Host." + Paths.InstanceId))
+                throw new InvalidOperationException("a host is already running (the LANDock tray or another window)");
             HostSetup.Ensure();
             if (!VddTool.DriverPresent()) throw new InvalidOperationException(VddTool.DriverHelp);
             StopLeftovers();
@@ -56,6 +97,38 @@ public sealed class HostService : IDisposable
 
             _cts = CancellationTokenSource.CreateLinkedTokenSource(external);
             var ct = _cts.Token;
+
+            // "LANDock host down" sets this event; the host then stops itself (also when it runs in the tray)
+            _stopSignal = new EventWaitHandle(false, EventResetMode.ManualReset, @"Local\LANDock.HostStop");
+            _stopSignal.Reset();
+            var signal = _stopSignal;
+            // checked every half second rather than waited on: the stop must not depend on one wait that can end early
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!ct.IsCancellationRequested)
+                    {
+                        if (signal.WaitOne(0))
+                        {
+                            Log.Info($"host down requested (running: {Running})");
+                            if (Running) _ = StopAsync();
+                            return;
+                        }
+                        await Task.Delay(500, ct);
+                    }
+                    Log.Info("host down watch ended: the host was stopped");
+                }
+                catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+                {
+                    Log.Info($"host down watch ended ({ex.GetType().Name})");
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("host down watch", ex);
+                }
+            });
+            Log.Info("watching for \"host down\"");
 
             if (_settings.Host.KeepAwake) StartKeepAwake(ct);
 
@@ -96,6 +169,12 @@ public sealed class HostService : IDisposable
             _acceptor = Task.Run(() => Accept(ct));
             _layout = Task.Run(() => WatchLayout(ct));
             Log.Info($"host ready; new desktop PCs can pair for the next {_settings.Host.PairingWindowMinutes} minutes");
+            // "host down" that came while the host was still starting: the watcher could not stop a host that was not running yet
+            if (_stopSignal is { } asked && asked.WaitOne(0))
+            {
+                Log.Info("host down was asked while the host started: stopping it");
+                await StopAsync();
+            }
         }
         catch
         {
@@ -118,7 +197,7 @@ public sealed class HostService : IDisposable
     public async Task StopAsync()
     {
         var cts = _cts;
-        if (cts == null && _procs.Count == 0) { Running = false; return; }
+        if (cts == null && _procs.Count == 0) { Running = false; ReleaseInstance(); return; }
         Log.Info("stopping the host");
         Running = false; Raise();
 
@@ -152,7 +231,10 @@ public sealed class HostService : IDisposable
         StopLeftovers();
         await Task.Delay(1500);
         Cleanup();
+        RestoreDisplays();   // the display setup from before the connection comes back now that the virtual displays are gone
         cts?.Dispose(); _cts = null; Pin = "";
+        _stopSignal?.Dispose(); _stopSignal = null;
+        ReleaseInstance();
         Log.Info("host stopped");
         Raise();
     }
@@ -190,8 +272,17 @@ public sealed class HostService : IDisposable
             var age = (now - h.at).TotalSeconds;
             if (age <= 60) heard.Add((d.UltraId, h.db, age));
         }
+        var starts = new List<string>();
+        lock (_gate)
+        {
+            foreach (var kv in _startRequests.ToList())
+            {
+                if (kv.Value > now) starts.Add(kv.Key);
+                else _startRequests.Remove(kv.Key);
+            }
+        }
         return new Advert(HostIdentity.HostId(), Environment.MachineName, AppInfo.Version, _settings.Host.ControlPort,
-            PairingOpen ? "open" : "closed", heard);
+            PairingOpen ? "open" : "closed", heard, starts);
     }
 
     /// <summary>
@@ -293,6 +384,149 @@ public sealed class HostService : IDisposable
     }
 
     private readonly Dictionary<string, IReadOnlyList<MonitorOffer>> _desktopScreens = new();
+    private readonly Dictionary<string, DateTime> _lastSession = new(StringComparer.Ordinal);      // by token hash
+    private readonly Dictionary<string, DateTime> _startRequests = new(StringComparer.OrdinalIgnoreCase);   // desktop id -> until
+
+    /// <summary>A paired desktop asked for its displays (its session request): it counts as connected for a while.</summary>
+    public void NoteSession(string token)
+    {
+        if (token == "") return;
+        lock (_gate)
+        {
+            _lastSession[HostIdentity.Hash(token)] = DateTime.Now;
+            _activeToken = token;
+            _lastSessionAt = DateTime.Now;
+        }
+    }
+
+    // the layout of the laptop's screens and the display setup to put back (LaptopLayout, DisplayConfig)
+    private byte[]? _savedDisplays;
+    private string? _activeToken;                      // the desktop that asked last
+    private DateTime _lastSessionAt = DateTime.MinValue;
+    private DateTime? _noDisplaysSince;
+    // the instances that show a copy of the laptop's screen: instance key -> the laptop screen it captures (see HostSetup.WriteCopyConf)
+    private readonly Dictionary<string, string> _copyOutput = new(StringComparer.OrdinalIgnoreCase);
+    public static readonly TimeSpan BackAfter = TimeSpan.FromSeconds(10), StillAsking = TimeSpan.FromSeconds(60), PendingStart = TimeSpan.FromMinutes(3);
+    private DateTime _lastActiveAt = DateTime.MinValue;   // the last time a display ran or a desktop sent a heartbeat
+    private string _lastInputs = "";
+
+    /// <summary>The placement and the copy the laptop uses for the desktop that asked last: its own choice, else the general one.</summary>
+    private (LaptopPlacement placement, DuplicateTarget duplicate) LayoutForActive() =>
+        LayoutOf(_activeToken == null ? null : HostIdentity.DesktopOfToken(_activeToken));
+
+    /// <summary>Keeps the display setup from before the first connection, to put it back when the displays are gone.</summary>
+    private void SaveDisplays()
+    {
+        if (_savedDisplays != null) return;
+        try
+        {
+            _savedDisplays = DisplayConfig.Save();
+            Log.Info("the display setup is saved; it comes back when the laptop's displays are gone");
+        }
+        catch (Exception ex) { Log.Error("the display setup could not be saved", ex); }
+    }
+
+    /// <summary>Puts the display setup from before the connection back (once: the saved setup is then forgotten).</summary>
+    private void RestoreDisplays()
+    {
+        var saved = _savedDisplays;
+        _savedDisplays = null;
+        _noDisplaysSince = null;
+        if (saved == null) return;
+        try
+        {
+            var ok = DisplayConfig.Restore(saved);
+            Log.Info(ok ? "the display setup is back as it was before the connection" : "the display setup could not be put back (check Windows Display settings)");
+        }
+        catch (Exception ex) { Log.Error("the display setup could not be put back", ex); }
+    }
+
+    // when each display was last turned: Apollo sets a display's mode again when its stream starts, so a turn can be undone and is retried
+    private readonly Dictionary<string, DateTime> _turnedAt = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan TurnEvery = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// A display that shows a desktop screen of the other orientation is turned to match it. Apollo reuses a display it made for a screen
+    /// of another orientation, so a portrait screen can get a landscape display: the laptop turns it.
+    /// </summary>
+    private void TurnDisplays(Dictionary<string, string?> names, Dictionary<string, ScreenInfo> screens)
+    {
+        foreach (var inst in Launched())
+        {
+            var name = names.TryGetValue(inst.Key, out var n) ? n : null;
+            if (name == null || !screens.TryGetValue(name, out var now)) continue;
+            if (!_agreed.TryGetValue(inst.Label, out var agreed)) continue;
+            if (!DisplayRotation.NeedsTurn(agreed.Width, agreed.Height, now.Width, now.Height)) continue;
+            if (_turnedAt.TryGetValue(name, out var last) && DateTime.Now - last < TurnEvery) continue;
+            _turnedAt[name] = DateTime.Now;
+            var portrait = agreed.Height > agreed.Width;
+            var ok = DisplayRotation.Turn($@"\\.\{name}", portrait);
+            Log.Info($"{inst.Label}: display {name} turned to {(portrait ? "portrait" : "landscape")} to match its screen ({agreed.Width}x{agreed.Height}): {(ok ? "done" : "Windows refused")}");
+        }
+    }
+
+    /// <summary>When no display runs for a while and no desktop has asked lately, the display setup from before the connection comes back.</summary>
+    private void WatchDisplaysGone(bool anyRunning)
+    {
+        var now = DateTime.Now;
+        if (anyRunning) { _noDisplaysSince = null; _lastActiveAt = now; return; }
+        _noDisplaysSince ??= now;
+        if (RestoreDue(now, _noDisplaysSince.Value, _lastSessionAt, _lastActiveAt, _savedDisplays != null)) RestoreDisplays();
+    }
+
+    /// <summary>
+    /// When the display setup comes back: no display has run for BackAfter, and the desktop has gone quiet. A desktop that asked (a
+    /// session) but has not streamed yet gets PendingStart (Moonlight takes a while to start). Once something has run or a heartbeat
+    /// came (lastActive after the session), it is StillAsking since that last sign of use. Pure: the times are passed in.
+    /// </summary>
+    public static bool RestoreDue(DateTime now, DateTime noDisplaysSince, DateTime lastSession, DateTime lastActive, bool saved)
+    {
+        if (!saved || now - noDisplaysSince <= BackAfter) return false;
+        return lastActive > lastSession ? now - lastActive > StillAsking : now - lastSession > PendingStart;
+    }
+
+    private readonly Dictionary<string, DateTime> _lastBeat = new(StringComparer.Ordinal);   // by token hash
+
+    /// <summary>A paired desktop says it is still connected (its heartbeat). It is also a sign that the laptop is in use.</summary>
+    public void NoteHeartbeat(string token)
+    {
+        if (token == "") return;
+        var now = DateTime.Now;
+        lock (_gate)
+        {
+            _lastBeat[HostIdentity.Hash(token)] = now;
+            _lastActiveAt = now;
+        }
+    }
+
+    /// <summary>When the desktop with this token hash last sent a heartbeat (DateTime.MinValue when never).</summary>
+    public DateTime LastBeatOf(string tokenHash)
+    {
+        lock (_gate) return _lastBeat.TryGetValue(tokenHash, out var t) ? t : DateTime.MinValue;
+    }
+
+    /// <summary>When the desktop with this token hash last asked for its displays (DateTime.MinValue when never).</summary>
+    public DateTime LastSessionOf(string tokenHash)
+    {
+        lock (_gate) return _lastSession.TryGetValue(tokenHash, out var t) ? t : DateTime.MinValue;
+    }
+
+    /// <summary>True when the desktop with this token hash asked for its displays within the given time.</summary>
+    public bool SessionWithin(string tokenHash, TimeSpan within)
+    {
+        lock (_gate) return _lastSession.TryGetValue(tokenHash, out var t) && DateTime.Now - t <= within;
+    }
+
+    /// <summary>
+    /// Asks the desktop with this ultrasound id to start its windows now. The request rides on the laptop's advert for two minutes;
+    /// the desktop starts its windows for this laptop when it sees the request.
+    /// </summary>
+    public void RequestStart(string desktopId)
+    {
+        if (desktopId == "") return;
+        lock (_gate) _startRequests[desktopId] = DateTime.Now.AddMinutes(2);
+        if (Running) _advertiser.Update(BuildAdvert());
+    }
     private readonly Dictionary<string, string> _displayScreen = new(StringComparer.OrdinalIgnoreCase);
     private volatile IReadOnlyList<MonitorOffer>? _latestScreens;
 
@@ -351,16 +585,40 @@ public sealed class HostService : IDisposable
     /// Starts the instances that the desktop's displays need and that are not started yet, and waits until each answers. Returns the
     /// labels of the displays that did not come up (the handshake refuses them).
     /// </summary>
-    public async Task<List<string>> EnsureDisplaysAsync(IEnumerable<StreamOffer> offers, CancellationToken ct = default)
+    /// <param name="copyScreenId">The desktop screen that shows a copy of the laptop's screen (null: none). Its display captures the
+    /// laptop's own screen instead of a virtual display.</param>
+    public async Task<List<string>> EnsureDisplaysAsync(IEnumerable<StreamOffer> offers, CancellationToken ct = default, string? copyScreenId = null)
     {
         var failed = new List<string>();
+        SaveDisplays();   // before any virtual display of this connection exists
         foreach (var o in offers)
         {
             var inst = HostPlanning.AllInstances.FirstOrDefault(i => i.Label.Equals(o.Name, StringComparison.OrdinalIgnoreCase));
             if (inst == null) continue;   // Agree names it
+            var output = copyScreenId != null && string.Equals(o.ScreenId, copyScreenId, StringComparison.OrdinalIgnoreCase) ? LaptopOutput() : null;
             bool fresh;
             lock (_gate) fresh = _launched.Add(inst.Key);
-            if (!fresh) continue;
+            if (!fresh)
+            {
+                // running already: it is restarted when its copy changes or its size does, and no stream of it runs now. Apollo keeps the
+                // size of the display it made and a reused display cannot take another size (the driver offers the modes of its first
+                // size), so an instance for another size starts afresh and makes its display again.
+                var current = _copyOutput.TryGetValue(inst.Key, out var c) ? c : null;
+                var resized = _agreed.TryGetValue(inst.Label, out var was) && (was.Width != o.Width || was.Height != o.Height);
+                if (current == output && !resized) continue;
+                // a copy waits for the stream that runs now to end; a size does not (that stream is for the old size)
+                if (current != output && StreamRunningOf(inst)) { Log.Info($"{inst.Label}: its copy changes at the next connection (a stream of it runs now)"); continue; }
+                if (resized) Log.Info($"{inst.Label}: size changes from {was.Width}x{was.Height} to {o.Width}x{o.Height}; the instance starts afresh");
+                KillInstance(inst);
+                // the driver keeps a display after its instance stops, and the new instance would take that display with its old size:
+                // the display of the client is removed first, so the stream makes one at the new size
+                if (resized)
+                {
+                    var uuids = UuidsOf(inst.Key);
+                    if (uuids.Count > 0) Log.Info($"{inst.Label}: its display is removed: {VddTool.Remove(uuids).Trim()}");
+                }
+            }
+            SetCopyMode(inst, output);
             try { Launch(inst); }
             catch (Exception ex)
             {
@@ -384,6 +642,9 @@ public sealed class HostService : IDisposable
     }
 
     public static string? ActiveDisplayOf(Instance inst) => HostPlanning.ActiveDisplay(ReadTailLines(Paths.InstanceLog(inst.Key), 512 * 1024));
+
+    /// <summary>True while a desktop is connected to the instance (see HostPlanning.StreamRunning).</summary>
+    public static bool StreamRunningOf(Instance inst) => HostPlanning.StreamRunning(ReadTailLines(Paths.InstanceLog(inst.Key), 512 * 1024));
 
     // ---- background loops ---------------------------------------------------------------------------------------------
 
@@ -412,6 +673,41 @@ public sealed class HostService : IDisposable
         }
     }
 
+    /// <summary>The laptop's own screen as Apollo captures it for a copy (null when the primary screen is not known).</summary>
+    private static string? LaptopOutput()
+    {
+        var primary = VddTool.Screens().Values.FirstOrDefault(s => s.Primary);
+        return primary == null ? null : @"\\.\" + primary.Name;
+    }
+
+    /// <summary>Makes the instance a copy of the laptop's screen (output given) or an ordinary display (null). Its config is written here;
+    /// the instance reads it when it starts.</summary>
+    private void SetCopyMode(Instance inst, string? output)
+    {
+        if (output == null) { lock (_gate) _copyOutput.Remove(inst.Key); return; }
+        HostSetup.WriteCopyConf(inst, output);
+        lock (_gate) _copyOutput[inst.Key] = output;
+        Log.Info($"{inst.Label} shows a copy of the laptop's screen ({output})");
+    }
+
+    /// <summary>Stops an instance that runs (for a restart with another config). The supervisor does not restart it: it is taken off
+    /// the process table first.</summary>
+    private void KillInstance(Instance inst)
+    {
+        Process? p;
+        lock (_gate) { _procs.TryGetValue(inst.Key, out p); _procs.Remove(inst.Key); _up.Remove(inst.Key); }
+        try { if (p != null && !p.HasExited) { p.Kill(true); p.WaitForExit(5000); } } catch { }
+    }
+
+    /// <summary>The desktop screen that shows a copy of the laptop's screen for this desktop (null: none).</summary>
+    public string? CopyScreenFor(HostIdentity.PairedDesktop? desktop, IReadOnlyList<MonitorOffer>? report) =>
+        LaptopLayout.DuplicateScreen(report ?? new List<MonitorOffer>(), LayoutOf(desktop).duplicate)?.Id;
+
+    /// <summary>The placement and the copy for a desktop: its own choice, else the general one.</summary>
+    private (LaptopPlacement placement, DuplicateTarget duplicate) LayoutOf(HostIdentity.PairedDesktop? d) =>
+        (LaptopLayout.ParsePlacement(d?.Placement ?? _settings.Host.LaptopPlacement),
+         LaptopLayout.ParseDuplicate(d?.Duplicate ?? _settings.Host.LaptopDuplicate));
+
     private void Launch(Instance inst)
     {
         Directory.CreateDirectory(Paths.InstanceDir(inst.Key));
@@ -420,7 +716,8 @@ public sealed class HostService : IDisposable
             WorkingDirectory = Paths.HostBin, UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true,
         };
-        psi.ArgumentList.Add(Paths.Fwd(Paths.InstanceConf(inst.Key)));
+        var copy = _copyOutput.ContainsKey(inst.Key);
+        psi.ArgumentList.Add(Paths.Fwd(copy ? Paths.InstanceConfCopy(inst.Key) : Paths.InstanceConf(inst.Key)));
         var p = Process.Start(psi)!;
         var sink = new StreamWriter(new FileStream(Paths.InstanceOut(inst.Key), FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
         p.OutputDataReceived += (_, e) => { if (e.Data != null) try { lock (sink) sink.WriteLine(e.Data); } catch { } };
@@ -528,15 +825,26 @@ public sealed class HostService : IDisposable
                 var screens = VddTool.Screens();
                 var names = CurrentDisplays(screens);
                 var report = _latestScreens;
-                var todo = report is { Count: > 0 }
-                    // the desktop's screens: each display goes where the screen it shows is, in the desktop's arrangement
-                    ? HostPlanning.PlanMirrorLayout(screens, Launched().Select(i => (names[i.Key], ScreenShownBy(i.Label))), report)
-                    : HostPlanning.PlanLayout(screens, Launched().Select(i => names[i.Key]));
+                var laptop = screens.Values.FirstOrDefault(s => s.Primary);
+                var running = Launched().Where(i => names[i.Key] != null).Select(i => (Display: names[i.Key]!, ScreenId: ScreenShownBy(i.Label))).ToList();
+                List<string> todo;
+                if (report is { Count: > 0 } && laptop != null)
+                {
+                    // the desktop's screens keep their arrangement; the laptop's screen is placed as the setting says (LaptopLayout)
+                    var (placement, _) = LayoutForActive();
+                    todo = LaptopLayout.Compute(laptop, report, running, screens, placement);
+                    var inputs = $"placement {LaptopLayout.PlacementName(placement)}, desktop screens {report.Count}, displays " +
+                                 string.Join(" ", running.Select(r => $"{r.Display}->{r.ScreenId ?? "?"}"));
+                    if (inputs != _lastInputs) { Log.Info($"layout: {inputs}"); _lastInputs = inputs; }
+                }
+                else todo = HostPlanning.PlanLayout(screens, Launched().Select(i => names[i.Key]));
                 if (todo.Count > 0)
                 {
                     var msg = $"layout {string.Join(' ', todo)} -> {VddTool.Layout(todo).Split('\n').LastOrDefault()?.Trim()}";
                     if (msg != last) { Log.Info(msg); last = msg; }
                 }
+                TurnDisplays(names, screens);
+                WatchDisplaysGone(running.Count > 0);
             }
             catch (Exception ex) { Log.Error("layout watcher", ex); }
             try { await Task.Delay(3000, ct); } catch (OperationCanceledException) { return; }
@@ -594,6 +902,14 @@ public sealed class HostService : IDisposable
     /// <summary>Every client uuid that ever paired with an instance. A client's virtual display is created under its uuid.</summary>
     public static List<string> ClientUuids()
     {
+        var all = new SortedSet<string>();
+        foreach (var inst in HostPlanning.AllInstances) all.UnionWith(UuidsOf(inst.Key));
+        return all.ToList();
+    }
+
+    /// <summary>The client uuids that paired with one instance (from its state.json): the clients whose display it shows.</summary>
+    public static List<string> UuidsOf(string instanceKey)
+    {
         var found = new SortedSet<string>();
         void Walk(JsonNode? n)
         {
@@ -608,10 +924,7 @@ public sealed class HostService : IDisposable
                     break;
             }
         }
-        foreach (var inst in HostPlanning.AllInstances)
-        {
-            try { Walk(JsonNode.Parse(File.ReadAllText(Path.Combine(Paths.InstanceDir(inst.Key), "state.json")))); } catch { }
-        }
+        try { Walk(JsonNode.Parse(File.ReadAllText(Path.Combine(Paths.InstanceDir(instanceKey), "state.json")))); } catch { }
         return found.ToList();
     }
 

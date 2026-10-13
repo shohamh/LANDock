@@ -48,6 +48,9 @@ public static class Paths
 
     public static string InstanceDir(string key) => Path.Combine(HostState, key);
     public static string InstanceConf(string key) => Path.Combine(HostState, key + ".conf");
+    /// <summary>The config of an instance that shows a copy of the laptop's own screen (no virtual display; see HostSetup.WriteCopyConf).</summary>
+    public static string InstanceConfCopy(string key) => Path.Combine(HostState, key + "-copy.conf");
+    public static string AppsCopyJson => Path.Combine(HostState, "apps-copy.json");
     public static string InstanceLog(string key) => Path.Combine(InstanceDir(key), "apollo.log");
     public static string InstanceOut(string key) => Path.Combine(InstanceDir(key), "out.txt");
 

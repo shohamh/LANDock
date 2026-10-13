@@ -23,7 +23,15 @@ public sealed class AppServices
     public UltraAnnouncer Announcer { get; } = new();
     /// <summary>The desktop's view of the LAN: the laptops found by mDNS (only when the client setting is on).</summary>
     public LanBrowser Browser { get; }
+    /// <summary>The desktop's presence on the LAN, so that a paired laptop recognizes it (only while a laptop is paired).</summary>
+    public PresenceAdvertiser Presence { get; } = new();
+    /// <summary>The laptop's view of the LAN: the paired desktops that show their presence.</summary>
+    public PresenceBrowser LaptopPresence { get; } = new();
+    /// <summary>The laptop's notice about nearby paired desktops (see NoticeService).</summary>
+    public NoticeService Notices { get; }
     private string _listenSig = "", _announceSig = "";
+    private readonly HashSet<string> _startHandled = new(StringComparer.OrdinalIgnoreCase);
+    private bool _startsBusy;
 
     public AppServices(Settings settings)
     {
@@ -32,6 +40,36 @@ public sealed class AppServices
         Client = new ClientService(settings);
         Updater = new Updater(settings, Host, Client);
         Browser = new LanBrowser(settings.Client.UltrasoundId);
+        Notices = new NoticeService(Host, LaptopPresence);
+    }
+
+    /// <summary>
+    /// A laptop asked this desktop to start its windows (its Connect button): the desktop starts them once per request, for a
+    /// paired laptop, unless windows already run.
+    /// </summary>
+    public async Task HandleStartRequestsAsync()
+    {
+        if (_startsBusy || !Paths.ClientInstalled) return;
+        _startsBusy = true;
+        try
+        {
+            var asked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var laptop in Browser.Snapshot())
+            {
+                if (!laptop.StartFor.Contains(Settings.Client.UltrasoundId, StringComparer.OrdinalIgnoreCase)) continue;
+                asked.Add(laptop.HostId);
+                if (_startHandled.Contains(laptop.HostId)) continue;
+                var profile = Settings.Client.Hosts.FirstOrDefault(h => h.Paired && string.Equals(h.HostId, laptop.HostId, StringComparison.OrdinalIgnoreCase));
+                if (profile == null) continue;
+                _startHandled.Add(laptop.HostId);
+                if (Client.AnyRunning()) continue;
+                Log.Info($"'{laptop.Name}' asked this desktop to start its windows");
+                try { await Client.StartAsync(profile); }
+                catch (Exception ex) { Log.Error("start request", ex); }
+            }
+            _startHandled.IntersectWith(asked);
+        }
+        finally { _startsBusy = false; }
     }
 
     /// <summary>Starts or stops the sensing services to match the settings. Safe to call at any time.</summary>
@@ -59,6 +97,22 @@ public sealed class AppServices
         else { Announcer.Stop(); _announceSig = ""; }
         if (Settings.Client.DiscoverLan) { if (!Browser.Running) Browser.Start(); }
         else Browser.Stop();
+
+        // the desktop shows its presence to the laptops on the LAN, while one of them is paired with it
+        if (Paths.ClientInstalled && Settings.Client.DiscoverLan && Settings.Client.Hosts.Any(h => h.Paired)) { if (!Presence.Running) Presence.Start(Settings.Client.UltrasoundId, Environment.MachineName); }
+        else Presence.Stop();
+
+        // the laptop watches for the paired desktops and shows the notice (the notice needs the host running)
+        if (Paths.HostInstalled && Settings.Host.ShowNotices)
+        {
+            if (!LaptopPresence.Running) LaptopPresence.Start();
+            if (!Notices.Running) Notices.Start();
+        }
+        else
+        {
+            Notices.Stop();
+            LaptopPresence.Stop();
+        }
     }
 
     /// <summary>The laptops in the order the desktop should connect to them.</summary>
@@ -70,6 +124,9 @@ public sealed class AppServices
         Listener.Dispose();
         Announcer.Dispose();
         Browser.Dispose();
+        Presence.Dispose();
+        Notices.Dispose();
+        LaptopPresence.Dispose();
     }
 }
 
@@ -141,8 +198,9 @@ public sealed class TrayApp : ApplicationContext
 
         app.Updater.UpdateAvailable += c => _ui.Post(_ => Balloon("LANDock update available", $"{c.Summary}. Click to review it.", ToolTipIcon.Info), null);
         app.Updater.Changed += () => _ui.Post(_ => RefreshMenu(), null);
-        _tick.Tick += (_, _) => RefreshMenu();
+        _tick.Tick += (_, _) => { RefreshMenu(); _ = _app.HandleStartRequestsAsync(); };
         _tick.Start();
+        app.Notices.Recognized += info => _ui.Post(_ => ShowNotice(info), null);
 
         app.Updater.Start();
         app.ApplySensing();
@@ -150,6 +208,20 @@ public sealed class TrayApp : ApplicationContext
         RefreshMenu();
         // first run: nothing configured yet, so show the window instead of only an icon
         if (!File.Exists(Paths.SettingsFile) && !afterUpdate) _form.ShowTab(Paths.ClientInstalled && !Paths.HostInstalled ? "client" : "host");
+    }
+
+    private DesktopNotice? _notice;
+
+    /// <summary>The notice for a recognized desktop. It replaces an earlier notice; it does not take the focus.</summary>
+    private void ShowNotice(NoticeInfo info)
+    {
+        if (!_app.Settings.Host.ShowNotices) return;
+        _notice?.Close();
+        _notice = new DesktopNotice(info, _app.Settings.Host.NoticeSnoozeMinutes,
+            id => _app.Notices.ConnectAsync(id),
+            id => _app.Notices.Dismiss(id),
+            id => _app.Notices.Snooze(id, _app.Settings.Host.NoticeSnoozeMinutes));
+        _notice.Show();
     }
 
     private async Task AutoStartAsync(bool afterUpdate)

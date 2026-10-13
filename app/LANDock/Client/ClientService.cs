@@ -62,6 +62,33 @@ public sealed class ClientService
         s.ScreenId = Monitors().FirstOrDefault(m => m.Index == index)?.Key ?? "";
     }
 
+    /// <summary>
+    /// Automatic displays: every connected screen gets a display (one connection to the laptop) when the displays start. A screen that
+    /// has one already keeps it; the others take the displays that are not in use, in the order of the laptop's displays (M1, M2, ...),
+    /// and the screens are taken left to right. A display that was on a screen now gone is free for another one.
+    /// </summary>
+    private void SyncDisplaysToScreens(HostProfile h, IReadOnlyList<MonitorInfo> mons)
+    {
+        if (!_settings.Client.AutoDisplays) return;
+        var covered = h.Streams.Where(s => s.Enabled && ScreenOf(s, mons) != null).Select(s => ScreenOf(s, mons)!.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var slots = LANDock.Host.HostPlanning.AllInstances.Select(i => h.Streams.FirstOrDefault(s => s.Name.Equals(i.Label, StringComparison.OrdinalIgnoreCase)))
+            .Where(s => s != null).Select(s => s!).ToList();
+        var changed = false;
+        foreach (var m in mons.OrderBy(m => m.Bounds.X).ThenBy(m => m.Bounds.Y))
+        {
+            if (covered.Contains(m.Key)) continue;
+            var free = slots.FirstOrDefault(s => !(s.Enabled && ScreenOf(s, mons) != null));
+            if (free == null) { Log.Info($"{h.Name}: {m.Name} has no free display (all {slots.Count} are in use)"); break; }
+            free.Enabled = true;
+            AssignMonitor(free, m.Index);
+            covered.Add(m.Key);
+            changed = true;
+            Log.Info($"{h.Name} {free.Name}: shown on {m.Name} (automatic display)");
+        }
+        if (changed) _settings.Save();
+    }
+
     /// <summary>The screens the enabled displays are shown on and that are connected now.</summary>
     public static List<MonitorInfo> ScreensInUse(HostProfile h, IReadOnlyList<MonitorInfo> mons) =>
         h.Streams.Where(s => s.Enabled).Select(s => ScreenOf(s, mons)).Where(m => m != null).Select(m => m!)
@@ -210,6 +237,45 @@ public sealed class ClientService
 
     /// <summary>The Moonlight process running this display, from its pid file (the copy is shared by all displays, so the folder
     /// cannot tell them apart). Empty once it has ended.</summary>
+    // ---- "still connected" heartbeat: the laptop keeps the notice away from a desktop that is using it ----------------------------
+
+    /// <summary>How often the desktop tells the laptop it is still connected while a display of the laptop runs.</summary>
+    public static readonly TimeSpan BeatEvery = TimeSpan.FromSeconds(5);
+
+    private readonly Dictionary<string, CancellationTokenSource> _beating = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Starts the heartbeat for this laptop (once): every few seconds while any of its displays runs, copy streams included. It ends by
+    /// itself when no display runs any more.
+    /// </summary>
+    private void KeepConnected(HostProfile h)
+    {
+        lock (_beating)
+        {
+            if (_beating.ContainsKey(h.Id)) return;
+            var stop = new CancellationTokenSource();
+            _beating[h.Id] = stop;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!stop.IsCancellationRequested && h.Streams.Any(s => StreamProcesses(h, s).Count > 0))
+                    {
+                        try
+                        {
+                            using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
+                            await c.HeartbeatAsync(h.Token, stop.Token);
+                        }
+                        catch (ControlException) { }   // the laptop is not answering: the next beat tries again
+                        await Task.Delay(BeatEvery, stop.Token);
+                    }
+                }
+                catch (OperationCanceledException) { }
+                finally { lock (_beating) _beating.Remove(h.Id); }
+            });
+        }
+    }
+
     private static List<Process> StreamProcesses(HostProfile h, StreamSettings s)
     {
         var res = new List<Process>();
@@ -423,6 +489,7 @@ public sealed class ClientService
         RequireMoonlight();
         if (!h.Paired) throw new InvalidOperationException($"{h.Name} is not paired yet: press Pair and enter the PIN shown on the laptop");
         var mons = Monitors();
+        if (string.IsNullOrEmpty(only)) SyncDisplaysToScreens(h, mons);
         var chosen = Selected(h, only).ToList();
         foreach (var s in chosen.Where(s => ScreenOf(s, mons) == null)) Log.Info($"{h.Name} {s.Name}: its screen is not connected; not started");
         chosen = chosen.Where(s => ScreenOf(s, mons) != null).ToList();
@@ -532,6 +599,7 @@ public sealed class ClientService
         }
         Log.Info($"{h.Name}: done. Click once in a window to give it keyboard focus; moving the mouse between monitors moves the laptop's pointer between its displays");
         Follow(h);
+        KeepConnected(h);
         return allOk;
     }
 
