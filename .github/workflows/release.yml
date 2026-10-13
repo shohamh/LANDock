@@ -123,7 +123,8 @@ jobs:
           # says the files after it are for the in-app updater, then those files (one upload each, in this order)
           SETUP="dist/LANDock-Setup-$VERSION.exe"
           MARKER="dist/VVV all files below this are just for auto update purposes VVV.txt"
-          : > "$MARKER"
+          # GitHub refuses an empty file as a release asset, so the marker has one line
+          echo "The files below this one are for the in-app updater. Download the installer above." > "$MARKER"
           REST=()
           for f in dist/*; do
             case "$f" in "$SETUP"|"$MARKER") continue ;; esac

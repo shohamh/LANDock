@@ -6,6 +6,13 @@ a version becomes the text of its GitHub release.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-13
+
+### Fixed
+- **The release publishes all its files.** The marker file after the installer was empty, and GitHub refuses empty release files,
+  so the release stopped after the installer. The marker now has one line of text, and the release lists the installer first, then
+  the marker, then the update parts.
+
 ## [0.4.2] - 2026-10-13
 
 ### Changed
