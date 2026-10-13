@@ -86,6 +86,54 @@ public static class LaptopLayout
     }
 
     /// <summary>
+    /// The extended screens, moved together so that the laptop's displays touch each other: where a screen that is not extended lies
+    /// between two extended ones, the space it takes is closed. The desktop's own arrangement (the diagram) keeps that space. Windows
+    /// keeps a display that touches no other display where it was, so a gap would leave a display unplaced.
+    /// </summary>
+    public static List<MonitorOffer> Pack(IReadOnlyList<MonitorOffer> all, IEnumerable<string> extendedIds)
+    {
+        var ext = new HashSet<string>(extendedIds, StringComparer.OrdinalIgnoreCase);
+        var cur = all.Select(s => s with { }).ToList();   // copies: the positions change below
+        foreach (var off in all.Where(s => !ext.Contains(s.Id)).OrderBy(s => s.X).ThenBy(s => s.Y).ToList())
+        {
+            var i = cur.FindIndex(s => s.Id.Equals(off.Id, StringComparison.OrdinalIgnoreCase));
+            var o = cur[i];
+            // the screens to its right, in its rows, move left by its width; the screens below it, in its columns, move up by its height
+            for (var k = 0; k < cur.Count; k++)
+            {
+                if (k == i) continue;
+                var s = cur[k];
+                if (s.X >= o.X + o.Width && s.Y < o.Y + o.Height && s.Y + s.Height > o.Y) cur[k] = s with { X = s.X - o.Width };
+            }
+            for (var k = 0; k < cur.Count; k++)
+            {
+                if (k == i) continue;
+                var s = cur[k];
+                if (s.Y >= o.Y + o.Height && s.X < o.X + o.Width && s.X + s.Width > o.X) cur[k] = s with { Y = s.Y - o.Height };
+            }
+        }
+        return cur.Where(s => ext.Contains(s.Id)).ToList();
+    }
+
+    /// <summary>True when every screen touches another (they form one arrangement that Windows keeps).</summary>
+    public static bool Connected(IReadOnlyList<MonitorOffer> screens)
+    {
+        if (screens.Count <= 1) return true;
+        bool Touch(MonitorOffer a, MonitorOffer b) =>
+            (a.X + a.Width == b.X || b.X + b.Width == a.X) && a.Y < b.Y + b.Height && b.Y < a.Y + a.Height ||
+            (a.Y + a.Height == b.Y || b.Y + b.Height == a.Y) && a.X < b.X + b.Width && b.X < a.X + a.Width;
+        var seen = new HashSet<int> { 0 };
+        var queue = new Queue<int>(new[] { 0 });
+        while (queue.Count > 0)
+        {
+            var n = queue.Dequeue();
+            for (var m = 0; m < screens.Count; m++)
+                if (!seen.Contains(m) && Touch(screens[n], screens[m])) { seen.Add(m); queue.Enqueue(m); }
+        }
+        return seen.Count == screens.Count;
+    }
+
+    /// <summary>
     /// The moves ("DISPLAYn=x,y") that put the laptop's virtual displays where the desktop's screens are, for the placement. 'desktop' is
     /// the desktop's screens as it reported them. 'active' is each virtual display the laptop runs and the desktop screen it shows; 'current'
     /// is where each display is now, so that only the moves that are needed are returned. A screen that shows a copy of the laptop's

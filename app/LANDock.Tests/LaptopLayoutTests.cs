@@ -168,6 +168,49 @@ public class LaptopLayoutTests
     }
 
     [Fact]
+    public void A_screen_not_extended_leaves_no_gap_on_the_laptop()
+    {
+        // three screens side by side; the middle one is not extended: the left and right ones are placed next to each other
+        var row = new List<MonitorOffer>
+        {
+            new("A", 0, 0, 1920, 1080, 0, true), new("B", 1920, 0, 1920, 1080, 0, false), new("C", 3840, 0, 1920, 1080, 0, false),
+        };
+        var packed = LaptopLayout.Pack(row, new[] { "A", "C" });
+        Assert.Equal(new[] { ("A", 0, 0), ("C", 1920, 0) }, packed.Select(s => (s.Id, s.X, s.Y)));
+        Assert.True(LaptopLayout.Connected(packed));
+        // the arrangement the diagram shows keeps the gap
+        Assert.False(LaptopLayout.Connected(new[] { row[0], row[2] }));
+        // all extended: nothing moves
+        Assert.Equal(new[] { ("A", 0, 0), ("B", 1920, 0), ("C", 3840, 0) }, LaptopLayout.Pack(row, new[] { "A", "B", "C" }).Select(s => (s.Id, s.X, s.Y)));
+    }
+
+    [Fact]
+    public void The_extended_displays_are_placed_next_to_each_other_for_the_placement()
+    {
+        var row = new List<MonitorOffer>
+        {
+            new("A", 0, 0, 1920, 1080, 0, true), new("B", 1920, 0, 1920, 1080, 0, false), new("C", 3840, 0, 1920, 1080, 0, false),
+        };
+        var packed = LaptopLayout.Pack(row, new[] { "A", "C" });
+        var now = Current(("DISPLAY2", 0, 0, 1920, 1080), ("DISPLAY3", 5760, 0, 1920, 1080));
+        var moves = LaptopLayout.Compute(Laptop, packed, new[] { ("DISPLAY2", (string?)"A"), ("DISPLAY3", (string?)"C") }, now, LaptopPlacement.Left);
+        // the laptop is at 0,0 and the desktop's group starts at 1920: the two displays are at 1920 and 3840, no gap
+        Assert.Equal((1920, 0), PositionOf(moves, "DISPLAY2", now));
+        Assert.Equal((3840, 0), PositionOf(moves, "DISPLAY3", now));
+    }
+
+    [Fact]
+    public void Only_the_screens_the_desktops_choice_keeps_on_are_extended()
+    {
+        // a screen with no choice is on; a screen the desktop's choice turns off gets no display
+        var screens = new List<MonitorOffer> { new("A", 0, 0, 1920, 1080, 0, true), new("B", 1920, 0, 1080, 1920, 90, false), new("C", 3000, 0, 1920, 1080, 0, false) };
+        var choices = new List<DisplayPolicy> { new("B", Enabled: false) };
+        var extended = NoticeService.ExtendedScreens(screens, choices).Select(s => s.Id).ToList();
+        Assert.Equal(new[] { "A", "C" }, extended);
+        Assert.Equal(new[] { "A", "B", "C" }, NoticeService.ExtendedScreens(screens, null).Select(s => s.Id));
+    }
+
+    [Fact]
     public void Names_parse_and_default_to_the_current_behaviour()
     {
         Assert.Equal(LaptopPlacement.BelowRight, LaptopLayout.ParsePlacement("below-right"));

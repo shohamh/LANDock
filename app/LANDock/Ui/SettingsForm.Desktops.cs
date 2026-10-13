@@ -113,7 +113,7 @@ public sealed partial class SettingsForm
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         };
         _policy.Columns.Add(new DataGridViewTextBoxColumn { Name = "Display", HeaderText = "Screen of the desktop", ReadOnly = true, FillWeight = 40 });
-        _policy.Columns.Add(new DataGridViewCheckBoxColumn { Name = "On", HeaderText = "On for this desktop", FillWeight = 60 });
+        _policy.Columns.Add(new DataGridViewCheckBoxColumn { Name = "On", HeaderText = "Extend to the laptop", FillWeight = 60 });
         var size = new DataGridViewComboBoxColumn { Name = "Size", HeaderText = "Largest size", FillWeight = 110 };
         foreach (var s in DisplayPolicies.Sizes) size.Items.Add(s.label);
         _policy.Columns.Add(size);
@@ -122,7 +122,7 @@ public sealed partial class SettingsForm
         _policy.Columns.Add(fps);
         _policy.Columns.Add(new DataGridViewTextBoxColumn { Name = "Agreed", HeaderText = "Last agreed with this desktop", ReadOnly = true, FillWeight = 120 });
         col.Controls.Add(_policy);
-        _savePolicy = new Button { Text = "Save display choices", AutoSize = true, MinimumSize = new Size(170, 28), Enabled = false };
+        _savePolicy = new Button { Text = "Save which screens are extended", AutoSize = true, MinimumSize = new Size(230, 28), Enabled = false };
         _savePolicy.Click += (_, _) => SavePolicy();
         _policyNote = new Label { AutoSize = true, MaximumSize = new Size(700, 0), ForeColor = SystemColors.GrayText };
         col.Controls.Add(Row(_savePolicy));
@@ -273,7 +273,9 @@ public sealed partial class SettingsForm
         var laptop = VddTool.Screens().Values.FirstOrDefault(s => s.Primary) ?? new ScreenInfo("DISPLAY1", 0, 0, 1920, 1080, true);
         var (placement, duplicate) = _app.Host.LayoutOf(d);
         var copy = screens.Count == 0 ? null : LaptopLayout.DuplicateScreen(screens, duplicate)?.Id;
-        _screensView.ShowLayout(screens, laptop, placement, copy);
+        // the screens this desktop's choice does not extend (kept with the desktop)
+        var notExtended = screens.Select(s => s.Id).Except(NoticeService.ExtendedScreens(screens, d.Displays).Select(s => s.Id), StringComparer.OrdinalIgnoreCase);
+        _screensView.ShowLayout(screens, laptop, placement, copy, notExtended);
     }
 
     // the laptop asks the selected desktop to connect: its displays start here and its windows start there (as the notice's Connect does)

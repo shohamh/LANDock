@@ -374,7 +374,7 @@ public sealed class ClientService
         try
         {
             using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
-            await c.SessionAsync(h.Token, OffersFor(all, mons), _settings.Client.UltrasoundId, ScreenReport(ScreensInUse(h, mons)));
+            await c.SessionAsync(h.Token, OffersFor(all, mons), _settings.Client.UltrasoundId, ScreenReport(mons));
         }
         catch (ControlException e) { Log.Error($"{h.Name}: the displays could not be started: {e.Message}", null); }
 
@@ -508,7 +508,7 @@ public sealed class ClientService
         {
             using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
             // every screen the user has set up for this laptop, not only the ones started now: the laptop lays out all of them
-            agreed = await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId, ScreenReport(ScreensInUse(h, mons)));
+            agreed = await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId, ScreenReport(mons));
         }
         catch (ControlException e) when (e.Status == 401)
         {
@@ -821,7 +821,7 @@ public sealed class ClientService
         {
             var offers = OffersFor(h.Streams.Where(s => s.Enabled && ScreenOf(s, now) != null), now);
             using var c = new ControlClient(h.Address, h.ControlPort, h.Fingerprint);
-            await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId, ScreenReport(ScreensInUse(h, now)), ct);
+            await c.SessionAsync(h.Token, offers, _settings.Client.UltrasoundId, ScreenReport(now), ct);
             Log.Info($"{h.Name}: the laptop knows the screens now in use ({ScreensInUse(h, now).Count})");
         }
         catch (Exception ex) when (ex is ControlException or HttpRequestException or TaskCanceledException) { Log.Error($"{h.Name}: could not tell the laptop about the screens", ex); }

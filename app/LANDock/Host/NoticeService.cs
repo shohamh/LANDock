@@ -29,6 +29,11 @@ public sealed class NoticeService : IDisposable
     public static bool ConnectedNow(DateTime now, DateTime lastSession, DateTime lastBeat, bool displayRunning) =>
         displayRunning || now - lastSession <= ConnectedFor || now - lastBeat <= BeatFor;
 
+    /// <summary>The screens of a desktop that are extended to this laptop: the ones its choice (kept per desktop) keeps on. A screen with no
+    /// choice is on. The rest are not extended: they get no display, and the desktop's arrangement still keeps them.</summary>
+    public static List<MonitorOffer> ExtendedScreens(IEnumerable<MonitorOffer> screens, IEnumerable<DisplayPolicy>? choices) =>
+        screens.Where(s => DisplayPolicies.Choose(choices, s.Id, null).Enabled).ToList();
+
     /// <summary>The laptop's display for each screen of a desktop: the screens left to right (then top to bottom), one display each, in
     /// the laptop's display order. Connect starts these displays, and the settings draw them, so both use this.</summary>
     public static List<(string Label, MonitorOffer Screen)> DisplaysFor(IEnumerable<MonitorOffer> screens) =>
@@ -131,8 +136,11 @@ public sealed class NoticeService : IDisposable
         if (d == null) return "this desktop is no longer paired with the laptop";
         if (!_host.Running) return "the host is not running";
         // one virtual display for each connected screen of the desktop, in the desktop's order (left to right)
-        var screens = (HostIdentity.ScreensOf(d.Name) ?? new List<MonitorOffer>()).OrderBy(s => s.X).ThenBy(s => s.Y).ToList();
-        if (screens.Count == 0) return "the desktop has not reported its screens yet: connect it from the desktop first";
+        // only the screens this desktop's choice extends (the choice is kept with the desktop): the others get no display
+        var reported = HostIdentity.ScreensOf(d.Name) ?? new List<MonitorOffer>();
+        if (reported.Count == 0) return "the desktop has not reported its screens yet: connect it from the desktop first";
+        var screens = ExtendedScreens(reported, d.Displays).OrderBy(s => s.X).ThenBy(s => s.Y).ToList();
+        if (screens.Count == 0) return "no screen of this desktop is extended to the laptop: turn one on in the Desktop PCs section";
         if (screens.Count > HostPlanning.MaxDisplays) return $"the desktop has {screens.Count} screens; the laptop serves up to {HostPlanning.MaxDisplays}";
         var offers = DisplaysFor(screens).Select(x => new StreamOffer(x.Label, x.Screen.Width, x.Screen.Height, 60, x.Screen.Id)).ToList();
         var failed = await _host.EnsureDisplaysAsync(offers, ct, _host.CopyScreenFor(d, screens));

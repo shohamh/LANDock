@@ -24,14 +24,18 @@ public sealed class ScreensView : Control
     }
 
     /// <summary>Shows the desktop's screens. copyScreenId is the screen that shows a copy of the laptop's screen (null for none).</summary>
-    public void ShowLayout(IReadOnlyList<MonitorOffer> screens, ScreenInfo? laptop, LaptopPlacement placement, string? copyScreenId)
+    public void ShowLayout(IReadOnlyList<MonitorOffer> screens, ScreenInfo? laptop, LaptopPlacement placement, string? copyScreenId,
+        IEnumerable<string>? notExtended = null)
     {
         _screens = screens.ToList();
         _laptop = laptop;
         _placement = placement;
         _copyScreenId = copyScreenId;
+        _notExtended = new HashSet<string>(notExtended ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
         Invalidate();
     }
+
+    private HashSet<string> _notExtended = new(StringComparer.OrdinalIgnoreCase);
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -78,17 +82,20 @@ public sealed class ScreensView : Control
         g.DrawString($"This laptop {_laptop.Width}x{_laptop.Height}", boldFont, Brushes.DarkGreen, lap.X + 4, lap.Y + 4);
 
         // the desktop's screens, each with the display that shows it
-        var displays = NoticeService.DisplaysFor(_screens).ToDictionary(x => x.Screen.Id, x => x.Label, StringComparer.OrdinalIgnoreCase);
+        var displays = NoticeService.DisplaysFor(_screens.Where(s => !_notExtended.Contains(s.Id))).ToDictionary(x => x.Screen.Id, x => x.Label, StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < _screens.Count; i++)
         {
             var s = _screens[i];
             var r = Scaled(screenRects[i]);
             var copy = _copyScreenId != null && s.Id.Equals(_copyScreenId, StringComparison.OrdinalIgnoreCase);
-            var fill = copy ? Color.FromArgb(230, 230, 230) : Color.FromArgb(214, 230, 248);
+            var off = _notExtended.Contains(s.Id);
+            var fill = off ? Color.FromArgb(246, 246, 246) : copy ? Color.FromArgb(230, 230, 230) : Color.FromArgb(214, 230, 248);
             g.FillRectangle(new SolidBrush(fill), r);
-            g.DrawRectangle(Pens.SteelBlue, r.X, r.Y, r.Width, r.Height);
+            using (var edge = off ? new Pen(Color.Gray) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash } : new Pen(Color.SteelBlue))
+                g.DrawRectangle(edge, r.X, r.Y, r.Width, r.Height);
             var name = s.Primary ? $"{s.Id}  primary" : s.Id;
-            var how = copy ? "copy of laptop screen"
+            var how = off ? "not extended (turned off)"
+                : copy ? "copy of laptop screen"
                 : displays.TryGetValue(s.Id, out var label) ? $"display {label}" : "no display";
             // three short lines, so that they stay inside a small screen
             g.DrawString(name, boldFont, Brushes.Black, r.X + 4, r.Y + 3);

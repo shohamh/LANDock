@@ -220,6 +220,7 @@ public sealed class HostService : IDisposable
         lock (_gate) _launched.Clear();
         _displayScreen.Clear();
         _latestScreens = null;
+        _latestLayoutScreens = null;
         try { await Task.WhenAll(new[] { _supervisor, _acceptor, _layout }.Where(t => t != null)!.Select(t => t!.WaitAsync(TimeSpan.FromSeconds(8)))); }
         catch { }
 
@@ -529,6 +530,8 @@ public sealed class HostService : IDisposable
     }
     private readonly Dictionary<string, string> _displayScreen = new(StringComparer.OrdinalIgnoreCase);
     private volatile IReadOnlyList<MonitorOffer>? _latestScreens;
+    // the extended screens of the latest desktop, placed on the laptop with no gap (LaptopLayout.Pack)
+    private volatile IReadOnlyList<MonitorOffer>? _latestLayoutScreens;
 
     /// <summary>Keeps the screens a desktop reported in its latest session request: the layout places the displays where those
     /// screens are (plan-monitor-layout.md, step 3). A request without a screen report changes nothing.</summary>
@@ -547,6 +550,12 @@ public sealed class HostService : IDisposable
         }
         _desktopScreens[token] = monitors;
         _latestScreens = monitors;
+        // the laptop's displays: the screens this desktop extends, moved together (no gap where a screen is not extended)
+        var extended = NoticeService.ExtendedScreens(monitors, HostIdentity.DesktopOfToken(token)?.Displays).Select(s => s.Id);
+        var packed = LaptopLayout.Pack(monitors, extended);
+        _latestLayoutScreens = packed;
+        if (packed.Count > 0 && !LaptopLayout.Connected(packed))
+            Log.Info("the extended screens of the desktop do not touch each other: some laptop displays may not be placed");
         HostIdentity.SetScreens(token, monitors);
         Log.Info($"a desktop reported {monitors.Count} screen(s): " + string.Join(", ", monitors.Select(m => $"{m.Id} {m.Width}x{m.Height} at {m.X},{m.Y} rotation {m.Rotation}")));
     }
@@ -701,7 +710,7 @@ public sealed class HostService : IDisposable
 
     /// <summary>The desktop screen that shows a copy of the laptop's screen for this desktop (null: none).</summary>
     public string? CopyScreenFor(HostIdentity.PairedDesktop? desktop, IReadOnlyList<MonitorOffer>? report) =>
-        LaptopLayout.DuplicateScreen(report ?? new List<MonitorOffer>(), LayoutOf(desktop).duplicate)?.Id;
+        LaptopLayout.DuplicateScreen(NoticeService.ExtendedScreens(report ?? new List<MonitorOffer>(), desktop?.Displays).ToList(), LayoutOf(desktop).duplicate)?.Id;
 
     /// <summary>The placement and the copy for a desktop: its own choice, else the general one.</summary>
     /// <summary>The placement and the duplicate that apply to a desktop (its own choice, else the general one).</summary>
@@ -825,7 +834,7 @@ public sealed class HostService : IDisposable
             {
                 var screens = VddTool.Screens();
                 var names = CurrentDisplays(screens);
-                var report = _latestScreens;
+                var report = _latestLayoutScreens;
                 var laptop = screens.Values.FirstOrDefault(s => s.Primary);
                 var running = Launched().Where(i => names[i.Key] != null).Select(i => (Display: names[i.Key]!, ScreenId: ScreenShownBy(i.Label))).ToList();
                 List<string> todo;

@@ -6,6 +6,25 @@ a version becomes the text of its GitHub release.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-13
+
+### Added
+- **Choose which screens of a desktop are extended to the laptop.** The laptop's Host tab, in "Desktop PCs paired with this
+  laptop", has an **Extend to the laptop** checkbox for each screen of the selected desktop. The choice is saved for that desktop
+  and applies at its next connection. Connect starts displays only for the extended screens.
+
+### Changed
+- **The desktop reports all its connected screens.** Before, it reported only the ones it extended, so the laptop could not show
+  the others. The laptop's diagram shows every screen, with the ones that are not extended marked "not extended (turned off)".
+
+### Fixed
+- **The laptop's displays touch each other when a screen between them is not extended.** The laptop places the extended screens
+  next to each other, with no gap, so Windows keeps every display. The diagram still shows the desktop's own arrangement, with the gap.
+
+### Known issues
+- **A connect can fail with "control stream establishment failed ... udp 47999".** The cause is not known yet (see 0.6.0).
+- **The packed layout is not yet tested on a real desktop with a screen turned off.**
+
 ## [0.6.0] - 2026-10-13
 
 ### Added
