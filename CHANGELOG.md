@@ -6,6 +6,14 @@ a version becomes the text of its GitHub release.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-13
+
+### Fixed
+- **The host helper starts on any PC.** `vddtool.exe` needed the MinGW runtime DLLs of the build machine, so on another PC Windows
+  could not start it. The runtime is now linked into the file.
+- **The app starts on any language.** The app ran in .NET's invariant mode, where only one culture exists, so a PC set to another
+  language (for example Hebrew or Arabic) failed with a culture error. It now uses the PC's own cultures.
+
 ## [0.4.3] - 2026-10-13
 
 ### Fixed

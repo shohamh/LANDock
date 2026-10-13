@@ -58,7 +58,7 @@ cmake -B "$APOLLO/build" -G Ninja -S "$APOLLO" -DFETCHCONTENT_SOURCE_DIR_BOOST="
 ninja -C "$APOLLO/build"
 
 say "4/5 vddtool"
-g++ -std=gnu++23 -O2 -I "$APOLLO" -I "$APOLLO/third-party" "$ROOT/tools/vddtool.cpp" -o "$WORK/vddtool.exe" -lsetupapi
+g++ -std=gnu++23 -O2 -static -static-libgcc -static-libstdc++ -I "$APOLLO" -I "$APOLLO/third-party" "$ROOT/tools/vddtool.cpp" -o "$WORK/vddtool.exe" -lsetupapi
 
 say "5/5 host/bin"
 mkdir -p "$ROOT/host/bin"

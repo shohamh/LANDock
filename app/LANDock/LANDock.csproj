@@ -17,7 +17,8 @@
     <!-- the release workflow passes -p:Version=<release version> -->
     <Version>0.1.0</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- off: .NET uses the PC's own cultures (Windows always has them), so a culture lookup cannot fail on another PC's language -->
+    <InvariantGlobalization>false</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
