@@ -23,7 +23,8 @@ needed.
 - A **tray icon and settings window** for everything, plus a command line.
 - **Automatic updates** (checked every few minutes; installed after you agree, or automatically if you choose), where
   only the parts that changed are downloaded.
-- A **Windows installer** that needs no administrator rights.
+- A **Windows installer** that is self-contained: it includes the virtual display driver (SudoVDA). It asks for administrator
+  permission once, to trust the driver's certificate and install the driver.
 
 ## Install
 
@@ -39,12 +40,12 @@ Direct link to the current release's installer: [LANDock-Setup-0.3.0.exe](https:
 
 ### 2. Install on both PCs
 
-Run the installer on **both** PCs. It does not need administrator rights and installs for your user only:
+Run the installer on **both** PCs. The programs install for your user only. Windows asks for administrator permission once for
+the parts that need it:
 
 | On the laptop (host) | On the desktop PC (client) |
 |---|---|
-| Choose *Laptop only* (or both). Tick the firewall option (Windows asks for permission once). | Choose *Desktop PC only* (or both). Tick the firewall option (Windows asks for permission once). |
-| Install the **virtual display driver once**: install [Apollo](https://github.com/ClassicOldSong/Apollo/releases) from its release (its installer adds the SudoVDA driver). LANDock does not install drivers. | Nothing else. |
+| Choose *Laptop only* (or both). Windows asks for permission once to install the virtual display driver (SudoVDA, included), and once more for the firewall option. | Choose *Desktop PC only* (or both). Tick the firewall option (Windows asks for permission once). |
 
 The installer and the programs are not code-signed yet, so Windows SmartScreen may show a warning the first time
 ("More info" > "Run anyway").

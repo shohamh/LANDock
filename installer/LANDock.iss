@@ -4,8 +4,9 @@
 ;
 ; Installs for the current Windows user only (no administrator rights), so the program can update itself in place.
 ; Two parts can be chosen: Host (the laptop that shares its displays) and Client (the desktop PC that shows them).
-; The one thing that needs administrator rights, the Windows Firewall rules (the host's, and the Moonlight copy's on the
-; desktop PC), is a separate step that Windows confirms with its own prompt.
+; The things that need administrator rights are separate steps that Windows confirms with their own prompts: the virtual display
+; driver (its certificate is trusted and the driver installed, host only) and the Windows Firewall rules (the host's, and the
+; Moonlight copy's on the desktop PC).
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -91,6 +92,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 ; one administrator prompt: replace the firewall rule for the host's program (private networks only)
 Filename: "{cmd}"; Parameters: "{code:FirewallCommand}"; Verb: "runas"; Flags: runhidden shellexec waituntilterminated; Tasks: firewall; StatusMsg: "Allowing LANDock through the firewall..."
+; one administrator prompt: the driver's certificate is trusted (as Apollo does) and the driver is installed, with its device
+Filename: "{cmd}"; Parameters: "{code:DriverCommand}"; Verb: "runas"; Flags: runhidden shellexec waituntilterminated; Components: host; StatusMsg: "Installing the virtual display driver..."
 Filename: "{app}\LANDock.exe"; Parameters: "--tray"; Description: "Start LANDock"; Flags: nowait postinstall skipifsilent
 Filename: "{app}\LANDock.exe"; Parameters: "--tray --after-update"; Flags: nowait; Check: WizardSilent
 
@@ -145,6 +148,17 @@ begin
   Result := '/c ' + cmd;
 end;
 
+// the one administrator command for the driver: its certificate is trusted and the package installed (the INF, the catalog and
+// the DLL are in the host folder); vddtool creates the device
+function DriverCommand(Param: String): String;
+var
+  dir: String;
+begin
+  dir := ExpandConstant('{app}\host\driver');
+  Result := '/c certutil -addstore -f Root "' + dir + '\sudovda.cer" & certutil -addstore -f TrustedPublisher "' + dir + '\sudovda.cer" & "' +
+            ExpandConstant('{app}\host\bin\vddtool.exe') + '" driver-install "' + dir + '"';
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   rc: Integer;
@@ -152,6 +166,11 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
+    // the virtual display driver: its device and package, and the certificate that trusted it (one administrator prompt)
+    if DirExists(ExpandConstant('{app}\host\driver')) then
+      ShellExec('runas', ExpandConstant('{sys}\cmd.exe'),
+                '/s /c ""' + ExpandConstant('{app}\host\bin\vddtool.exe') + '" driver-remove "' + ExpandConstant('{app}\host\driver') + '" & ' +
+                'certutil -delstore Root "sudovda@su.mk" & certutil -delstore TrustedPublisher "sudovda@su.mk""', '', SW_HIDE, ewWaitUntilTerminated, rc);
     // the firewall rules are machine-wide: remove them (Windows asks for permission) when we added them
     if FirewallRuleExists('{#FirewallRule}') or FirewallRuleExists('{#MoonlightRule}') then
       ShellExec('runas', ExpandConstant('{sys}\cmd.exe'), '/c netsh advfirewall firewall delete rule name="{#FirewallRule}" & netsh advfirewall firewall delete rule name="{#ControlRule}" & netsh advfirewall firewall delete rule name="{#MoonlightRule}"', '', SW_HIDE, ewWaitUntilTerminated, rc);

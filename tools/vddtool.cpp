@@ -9,6 +9,7 @@
 #include <string>
 #include <windows.h>
 #include <setupapi.h>
+#include <newdev.h>
 #include <initguid.h>
 #include "third-party/sudovda/sudovda.h"
 #include "src/utility.h"
@@ -16,10 +17,160 @@
 
 using namespace SUDOVDA;
 
+// ---- the driver: installs SudoVDA's package and creates its device. The Apollo installer does the same with nefconc.exe; here it is
+// Windows' own setup API, so no other program is needed.
+static const wchar_t *SUDOVDA_HWID = L"Root\\SudoMaker\\SudoVDA";   // the hardware id in SudoVDA.inf
+static const GUID SUDOVDA_CLASS = {0x4D36E968, 0xE325, 0x11CE, {0xBF, 0xC1, 0x08, 0x00, 0x2B, 0xE1, 0x03, 0x18}};   // Display
+
+// the SudoVDA device node if Windows has one (its set stays open for the caller to close); INVALID_HANDLE_VALUE when there is none
+static HDEVINFO findSudoVdaDevice(SP_DEVINFO_DATA &dev) {
+	HDEVINFO set = SetupDiGetClassDevsW(&SUDOVDA_CLASS, nullptr, nullptr, 0);
+	if (set == INVALID_HANDLE_VALUE) return set;
+	for (DWORD i = 0;; ++i) {
+		SP_DEVINFO_DATA d{};
+		d.cbSize = sizeof(d);
+		if (!SetupDiEnumDeviceInfo(set, i, &d)) break;
+		wchar_t ids[1024]{};
+		DWORD type = 0, need = 0;
+		if (!SetupDiGetDeviceRegistryPropertyW(set, &d, SPDRP_HARDWAREID, &type, reinterpret_cast<PBYTE>(ids), sizeof(ids), &need)) continue;
+		for (const wchar_t *p = ids; *p; p += wcslen(p) + 1) {
+			if (_wcsicmp(p, SUDOVDA_HWID) == 0) {
+				dev = d;
+				return set;
+			}
+		}
+	}
+	SetupDiDestroyDeviceInfoList(set);
+	return INVALID_HANDLE_VALUE;
+}
+
+static std::wstring toWide(const char *s) {
+	int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+	std::wstring w(n > 0 ? n - 1 : 0, L'\0');
+	if (n > 1) MultiByteToWideChar(CP_UTF8, 0, s, -1, w.data(), n);
+	return w;
+}
+
+static bool sameFile(const std::wstring &a, const std::wstring &b) {
+	HANDLE ha = CreateFileW(a.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+	HANDLE hb = CreateFileW(b.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+	bool same = false;
+	if (ha != INVALID_HANDLE_VALUE && hb != INVALID_HANDLE_VALUE) {
+		LARGE_INTEGER sa{}, sb{};
+		GetFileSizeEx(ha, &sa);
+		GetFileSizeEx(hb, &sb);
+		if (sa.QuadPart == sb.QuadPart && sa.QuadPart > 0) {
+			std::vector<char> ba(static_cast<size_t>(sa.QuadPart)), bb(ba.size());
+			DWORD ra = 0, rb = 0;
+			same = ReadFile(ha, ba.data(), static_cast<DWORD>(ba.size()), &ra, nullptr) && ReadFile(hb, bb.data(), static_cast<DWORD>(bb.size()), &rb, nullptr) && ra == rb && ba == bb;
+		}
+	}
+	if (ha != INVALID_HANDLE_VALUE) CloseHandle(ha);
+	if (hb != INVALID_HANDLE_VALUE) CloseHandle(hb);
+	return same;
+}
+
+// the driver store copies of the package (oemNN.inf in the INF folder) that are this INF: Windows names them, and the names
+// differ on every PC, so they are found by content
+static std::vector<std::wstring> driverStoreCopies(const std::wstring &inf) {
+	std::vector<std::wstring> found;
+	wchar_t windir[MAX_PATH]{};
+	GetWindowsDirectoryW(windir, MAX_PATH);
+	std::wstring pattern = std::wstring(windir) + L"\\INF\\oem*.inf";
+	WIN32_FIND_DATAW f{};
+	HANDLE h = FindFirstFileW(pattern.c_str(), &f);
+	if (h == INVALID_HANDLE_VALUE) return found;
+	do {
+		std::wstring path = std::wstring(windir) + L"\\INF\\" + f.cFileName;
+		if (sameFile(path, inf)) found.push_back(f.cFileName);
+	} while (FindNextFileW(h, &f));
+	FindClose(h);
+	return found;
+}
+
+// driver-install <folder with SudoVDA.inf>: the package into the driver store, the device node (once), and the driver bound to it
+static int driverInstall(const std::wstring &dir) {
+	std::wstring inf = dir + L"\\SudoVDA.inf";
+	if (GetFileAttributesW(inf.c_str()) == INVALID_FILE_ATTRIBUTES) {
+		wprintf(L"no SudoVDA.inf in %ls\n", dir.c_str());
+		return 2;
+	}
+	if (!SetupCopyOEMInfW(inf.c_str(), nullptr, SPOST_PATH, 0, nullptr, 0, nullptr, nullptr)) {
+		wprintf(L"the driver package could not be added (error %lu): run as administrator\n", GetLastError());
+		return 1;
+	}
+	SP_DEVINFO_DATA dev{};
+	HDEVINFO set = findSudoVdaDevice(dev);
+	if (set == INVALID_HANDLE_VALUE) {
+		set = SetupDiCreateDeviceInfoList(&SUDOVDA_CLASS, nullptr);
+		if (set == INVALID_HANDLE_VALUE) return 1;
+		SP_DEVINFO_DATA d{};
+		d.cbSize = sizeof(d);
+		if (!SetupDiCreateDeviceInfoW(set, L"Display", &SUDOVDA_CLASS, nullptr, nullptr, DICD_GENERATE_ID, &d)) {
+			wprintf(L"the device could not be created (error %lu)\n", GetLastError());
+			SetupDiDestroyDeviceInfoList(set);
+			return 1;
+		}
+		std::wstring hwid = SUDOVDA_HWID;
+		hwid.push_back(L'\0');   // a multi-string: ends with an empty string
+		hwid.push_back(L'\0');
+		if (!SetupDiSetDeviceRegistryPropertyW(set, &d, SPDRP_HARDWAREID, reinterpret_cast<const BYTE *>(hwid.data()), static_cast<DWORD>(hwid.size() * sizeof(wchar_t))) ||
+		    !SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set, &d)) {
+			wprintf(L"the device could not be registered (error %lu)\n", GetLastError());
+			SetupDiDestroyDeviceInfoList(set);
+			return 1;
+		}
+		wprintf(L"device created\n");
+	}
+	SetupDiDestroyDeviceInfoList(set);
+	BOOL reboot = FALSE;
+	if (!UpdateDriverForPlugAndPlayDevicesW(nullptr, SUDOVDA_HWID, inf.c_str(), INSTALLFLAG_FORCE, &reboot)) {
+		wprintf(L"the driver could not be bound to the device (error %lu)\n", GetLastError());
+		return 1;
+	}
+	wprintf(L"driver installed%ls\n", reboot ? L"; a restart is needed" : L"");
+	return 0;
+}
+
+// driver-remove <folder with SudoVDA.inf>: the device node, then the package from the driver store
+static int driverRemove(const std::wstring &dir) {
+	std::wstring inf = dir + L"\\SudoVDA.inf";
+	SP_DEVINFO_DATA dev{};
+	int failed = 0;
+	HDEVINFO set = findSudoVdaDevice(dev);
+	if (set != INVALID_HANDLE_VALUE) {
+		if (SetupDiCallClassInstaller(DIF_REMOVE, set, &dev)) wprintf(L"device removed\n");
+		else {
+			wprintf(L"the device could not be removed (error %lu): run as administrator\n", GetLastError());
+			failed++;
+		}
+		SetupDiDestroyDeviceInfoList(set);
+	}
+	std::vector<std::wstring> copies = driverStoreCopies(inf);
+	if (copies.empty()) wprintf(L"no driver package of SudoVDA is in the driver store\n");
+	for (const std::wstring &copy : copies) {
+		if (SetupUninstallOEMInfW(copy.c_str(), SUOI_FORCEDELETE, nullptr)) wprintf(L"driver package %ls removed\n", copy.c_str());
+		else {
+			wprintf(L"driver package %ls could not be removed (error %lu): run as administrator\n", copy.c_str(), GetLastError());
+			failed++;
+		}
+	}
+	return failed == 0 ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) {
     std::fprintf(stderr, "usage: vddtool watchdog | remove <uuid>...\n");
     return 2;
+  }
+  // the driver commands run before the device is opened: it does not exist until they have run
+  if (std::string(argv[1]) == "driver-install" || std::string(argv[1]) == "driver-remove") {
+    if (argc < 3) {
+      std::fprintf(stderr, "usage: vddtool %s <folder with SudoVDA.inf>\n", argv[1]);
+      return 2;
+    }
+    std::wstring dir = toWide(argv[2]);
+    return std::string(argv[1]) == "driver-install" ? driverInstall(dir) : driverRemove(dir);
   }
   HANDLE h = OpenDevice(&SUVDA_INTERFACE_GUID);
   if (h == INVALID_HANDLE_VALUE) {

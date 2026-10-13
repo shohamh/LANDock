@@ -32,6 +32,7 @@ if (-not $Stage) { $Stage = Join-Path $root 'build\stage' }
 if (-not (Test-Path $AppExe)) { throw "LANDock.exe not found: $AppExe" }
 if (-not (Test-Path $GgWaveDll)) { throw "ggwave.dll not found: $GgWaveDll (scripts\build-ggwave.sh builds it)" }
 foreach ($f in 'sunshine.exe', 'vddtool.exe', 'assets') { if (-not (Test-Path (Join-Path $HostBin $f))) { throw "$HostBin\$f is missing: run scripts\build-host.sh first" } }
+foreach ($f in 'SudoVDA.inf', 'SudoVDA.dll', 'sudovda.cat', 'sudovda.cer') { if (-not (Test-Path (Join-Path $root "driver\sudovda\$f"))) { throw "driver\sudovda\$f is missing (the virtual display driver)" } }
 
 function Read-Env($path) {
   $h = @{}
@@ -68,7 +69,9 @@ Copy-Item (Join-Path $root 'host\apps.json') $hostDir
 Copy-Item (Join-Path $root 'patches') (Join-Path $hostDir 'patches') -Recurse
 Copy-Item (Join-Path $root 'LICENSE') $hostDir
 Copy-Item (Join-Path $root 'NOTICE.md') $hostDir
-$contentHash = Sha256-OfText ((Get-Content (Join-Path $root 'tools\vddtool.cpp') -Raw) + (Get-Content (Join-Path $root 'host\apps.json') -Raw))
+# the virtual display driver (SudoVDA, MIT/CC0): the installer trusts its certificate and installs it (one administrator prompt)
+Copy-Item (Join-Path $root 'driver\sudovda') (Join-Path $hostDir 'driver') -Recurse
+$contentHash = Sha256-OfText ((Get-Content (Join-Path $root 'tools\vddtool.cpp') -Raw) + (Get-Content (Join-Path $root 'host\apps.json') -Raw) + (Sha256-Of (Join-Path $root 'driver\sudovda\SudoVDA.dll')) + (Sha256-Of (Join-Path $root 'driver\sudovda\SudoVDA.inf')))
 $hostId = (Short $apolloCommit) + '.' + (Short $contentHash)
 Set-Content (Join-Path $hostDir 'VERSION.txt') $hostId -NoNewline
 $q = [char]96
@@ -85,6 +88,8 @@ ${q}bin\sunshine.exe${q} and ${q}bin\assets\${q} are **Apollo** (GPL-3.0) built 
 | Build | ${q}scripts/build-host.sh${q} in https://github.com/shohamh/LANDock (MSYS2 UCRT64, CMake, Ninja; Boost $($v.BOOST_VERSION) SHA256 ${q}$($v.BOOST_SHA256)${q}) |
 
 ${q}bin\vddtool.exe${q} is built from ${q}tools/vddtool.cpp${q} in the same repository, using headers from the Apollo source above.
+
+${q}driver\${q} is **SudoVDA** (MIT and CC0 / public domain, https://github.com/SudoMaker/SudoVDA): ${q}SudoVDA.dll${q} is the signed build of SudoMaker (its signature is by sudovda@su.mk), with the ${q}SudoVDA.inf${q}, ${q}sudovda.cat${q} and ${q}sudovda.cer${q} that Apollo ships.
 
 Component id: $hostId   (LANDock release $Version)
 "@

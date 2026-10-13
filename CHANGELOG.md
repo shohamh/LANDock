@@ -6,6 +6,17 @@ a version becomes the text of its GitHub release.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-13
+
+### Added
+- **The installer includes the virtual display driver (SudoVDA).** The laptop's installer trusts the driver's certificate and
+  installs the driver with one administrator prompt, as Apollo does. The uninstaller removes the driver and the certificate.
+  The helper (`vddtool`) creates the driver's device itself, so no other tool is needed.
+
+### Known limitations
+- **An update does not install a changed driver.** The in-app updater replaces the files of a part but does not run the
+  installer; a release that changes the driver package needs the new installer.
+
 ## [0.4.4] - 2026-10-13
 
 ### Fixed
