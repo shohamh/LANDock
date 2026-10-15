@@ -8,7 +8,7 @@
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 W="$ROOT/build/notice-test"
 D="$W/data"
-APP="$LOCALAPPDATA/Programs/LANDock/LANDock.exe"
+APP="${LANDOCK_APP:-$LOCALAPPDATA/Programs/LANDock/LANDock.exe}"
 SHOT="$W/notice.png"
 export LANDOCK_DATA_DIR="$(cygpath -m "$D")"
 log() { echo "[$(date +%T)] $*"; }
@@ -51,6 +51,12 @@ log "== windows of the test tray (the notice is one of them)"
 TRAYPID=$(cat "$W/tray.pid" 2>/dev/null)
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$ROOT/tests/windows.ps1")" -ProcessId "$TRAYPID" -SaveDir "$(cygpath -w "$W")" 2>&1 | tr -d '\r' | cut -c1-240 | tee "$W/windows.txt"
 
+log "== click the screen in the notice (turns it off for the laptop)"
+PSHOT="$W/notice-before.png"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$ROOT/tests/screenshot.ps1")" -Path "$(cygpath -w "$PSHOT")" > /dev/null 2>&1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$ROOT/tests/click-screen.ps1")" -ProcessId "$TRAYPID" 2>&1 | tr -d ''
+sleep 2
+echo "  saved choices:"; grep -A6 '"Displays"' "$D/host/paired-desktops.json" 2>/dev/null || find "$D" -name paired-desktops.json -exec grep -A6 Displays {} \;
 log "== screenshot"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$ROOT/tests/screenshot.ps1")" -Path "$(cygpath -w "$SHOT")" > /dev/null 2>&1
 log "screenshot: $SHOT"

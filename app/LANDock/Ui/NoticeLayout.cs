@@ -3,10 +3,11 @@ using System.Drawing;
 namespace LANDock.Ui;
 
 /// <summary>A desktop screen as the notice draws it: where it is and how big, in pixels as Windows shows it (rotation already applied).</summary>
-public sealed record NoticeScreen(string Id, int X, int Y, int Width, int Height, bool Primary);
+public sealed record NoticeScreen(string Id, int X, int Y, int Width, int Height, bool Primary, bool Enabled = true);
 
-/// <summary>A screen's rectangle inside the notice, its resolution label, and whether it is the primary screen.</summary>
-public sealed record NoticeBox(Rectangle Bounds, string Label, bool Primary, bool Portrait);
+/// <summary>A screen's rectangle inside the notice, its resolution label, and whether it is the primary screen. Enabled is false for a
+/// screen that is not extended to the laptop (drawn greyed out; a click turns it on again).</summary>
+public sealed record NoticeBox(Rectangle Bounds, string Label, bool Primary, bool Portrait, string Id = "", bool Enabled = true);
 
 public static class NoticeLayout
 {
@@ -41,7 +42,7 @@ public static class NoticeLayout
             var w = Math.Max(minSide, (int)Math.Round(s.Width * scale) - gap);
             var h = Math.Max(minSide, (int)Math.Round(s.Height * scale) - gap);
             var bounds = new Rectangle((int)Math.Round(left) + gap / 2, (int)Math.Round(top) + gap / 2, w, h);
-            res.Add(new NoticeBox(bounds, $"{s.Width}x{s.Height}", s.Primary, s.Height > s.Width));
+            res.Add(new NoticeBox(bounds, $"{s.Width}x{s.Height}", s.Primary, s.Height > s.Width, s.Id, s.Enabled));
         }
         return res;
     }

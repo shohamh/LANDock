@@ -220,7 +220,12 @@ public sealed class TrayApp : ApplicationContext
         _notice = new DesktopNotice(info, _app.Settings.Host.NoticeSnoozeMinutes,
             id => _app.Notices.ConnectAsync(id),
             id => _app.Notices.Dismiss(id),
-            id => _app.Notices.Snooze(id, _app.Settings.Host.NoticeSnoozeMinutes));
+            id => _app.Notices.Snooze(id, _app.Settings.Host.NoticeSnoozeMinutes),
+            (id, screen, on) =>
+            {
+                NoticeService.SetScreenEnabled(id, screen, on);
+                return _app.Notices.ScreensOfDesktop(id);
+            });
         _notice.Show();
     }
 

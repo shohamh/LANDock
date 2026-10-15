@@ -21,7 +21,8 @@ public sealed class DesktopNotice : Form
     private readonly NoticeInfo _info;
     private readonly Label _status;
     private readonly Button _connect, _snooze, _dismiss;
-    private readonly List<NoticeBox> _boxes;
+    private List<NoticeBox> _boxes;
+    private readonly Func<string, string, bool, IReadOnlyList<NoticeScreen>> _toggleAction;
     private readonly System.Windows.Forms.Timer _ignore = new() { Interval = (int)IgnoredAfter.TotalMilliseconds };
 
     private static readonly Rectangle DiagramArea = new(12, 40, WidthPx - 24, 104);
@@ -30,9 +31,12 @@ public sealed class DesktopNotice : Form
     private readonly Action<string> _dismissed;
     private readonly Action<string> _snoozed;
 
-    public DesktopNotice(NoticeInfo info, int snoozeMinutes, Func<string, Task<string?>> connect, Action<string> dismiss, Action<string> snooze)
+    /// <param name="toggle">Turns a screen of the desktop on or off (desktop id, screen id, on) and returns the screens as they are now.</param>
+    public DesktopNotice(NoticeInfo info, int snoozeMinutes, Func<string, Task<string?>> connect, Action<string> dismiss, Action<string> snooze,
+        Func<string, string, bool, IReadOnlyList<NoticeScreen>>? toggle = null)
     {
         _info = info;
+        _toggleAction = toggle ?? ((_, _, _) => info.Screens);
         _connectAction = connect;
         _dismissed = dismiss;
         _snoozed = snooze;
@@ -67,6 +71,9 @@ public sealed class DesktopNotice : Form
         Controls.Add(_connect); Controls.Add(_snooze); Controls.Add(_dismiss);
 
         Paint += (_, e) => PaintDiagram(e.Graphics);
+        MouseClick += (_, e) => ToggleAt(e.Location);
+        MouseMove += (_, e) => Cursor = _boxes.Any(b => b.Id != "" && b.Bounds.Contains(e.Location)) ? Cursors.Hand : Cursors.Default;
+        UpdateConnectEnabled();
         _ignore.Tick += (_, _) => { _ignore.Stop(); Close(); };
         Shown += (_, _) => _ignore.Start();
         FormClosed += (_, _) => _ignore.Dispose();
@@ -91,6 +98,26 @@ public sealed class DesktopNotice : Form
         return new Button { Text = text, Location = new Point(x, HeightPx - 42), Size = new Size(86, 28), TabStop = false, FlatStyle = FlatStyle.System };
     }
 
+    /// <summary>A click on a screen of the diagram turns it on or off for the laptop (kept with the desktop, like the Desktop PCs section).</summary>
+    private void ToggleAt(Point p)
+    {
+        var box = _boxes.FirstOrDefault(b => b.Id != "" && b.Bounds.Contains(p));
+        if (box == null || !_connect.Enabled && _status.Text.StartsWith("Starting")) return;
+        var screens = _toggleAction(_info.DesktopId, box.Id, !box.Enabled);
+        _boxes = NoticeLayout.Diagram(screens, DiagramArea);
+        _ignore.Stop(); _ignore.Start();   // the user is still deciding: the notice stays a little longer
+        UpdateConnectEnabled();
+        Invalidate();
+    }
+
+    private void UpdateConnectEnabled()
+    {
+        var any = _boxes.Count == 0 || _boxes.Any(b => b.Enabled);
+        _connect.Enabled = any;
+        _status.ForeColor = SystemColors.GrayText;
+        _status.Text = _boxes.Count == 0 ? "" : any ? "Click a screen to turn it off or on for the laptop." : "All screens are off: click one to turn it on.";
+    }
+
     private async Task ConnectAsync()
     {
         _connect.Enabled = _snooze.Enabled = _dismiss.Enabled = false;
@@ -108,7 +135,8 @@ public sealed class DesktopNotice : Form
         {
             _status.ForeColor = Color.Firebrick;
             _status.Text = error;
-            _connect.Enabled = _snooze.Enabled = _dismiss.Enabled = true;
+            _snooze.Enabled = _dismiss.Enabled = true;
+            _connect.Enabled = _boxes.Count == 0 || _boxes.Any(b => b.Enabled);
         }
     }
 
@@ -118,18 +146,18 @@ public sealed class DesktopNotice : Form
         using var labelFont = new Font(Font.FontFamily, 7f);
         foreach (var box in _boxes)
         {
-            var fill = box.Primary ? Color.FromArgb(70, 130, 200) : Color.FromArgb(200, 220, 240);
+            var fill = !box.Enabled ? Color.FromArgb(235, 235, 235) : box.Primary ? Color.FromArgb(70, 130, 200) : Color.FromArgb(200, 220, 240);
             using var brush = new SolidBrush(fill);
-            using var pen = new Pen(Color.FromArgb(40, 70, 110));
+            using var pen = new Pen(box.Enabled ? Color.FromArgb(40, 70, 110) : Color.FromArgb(170, 170, 170)) { DashStyle = box.Enabled ? System.Drawing.Drawing2D.DashStyle.Solid : System.Drawing.Drawing2D.DashStyle.Dash };
             g.FillRectangle(brush, box.Bounds);
             g.DrawRectangle(pen, box.Bounds);
             // the resolution, small, inside the screen (only when it fits)
             var size = g.MeasureString(box.Label, labelFont);
             if (size.Width + 4 < box.Bounds.Width && size.Height + 2 < box.Bounds.Height)
             {
-                var color = box.Primary ? Color.White : Color.FromArgb(30, 50, 80);
+                var color = !box.Enabled ? Color.FromArgb(150, 150, 150) : box.Primary ? Color.White : Color.FromArgb(30, 50, 80);
                 using var text = new SolidBrush(color);
-                g.DrawString(box.Label, labelFont, text, box.Bounds.X + (box.Bounds.Width - size.Width) / 2f, box.Bounds.Y + (box.Bounds.Height - size.Height) / 2f);
+                g.DrawString(box.Enabled ? box.Label : box.Label + " off", labelFont, text, box.Bounds.X + (box.Bounds.Width - size.Width) / 2f, box.Bounds.Y + (box.Bounds.Height - size.Height) / 2f);
             }
         }
         if (_boxes.Count == 0)

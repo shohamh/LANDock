@@ -67,6 +67,23 @@ public class NoticeLayoutTests
     }
 
     [Fact]
+    public void A_box_keeps_its_screen_id_and_whether_it_is_on()
+    {
+        var screens = new[] { new NoticeScreen("A", 0, 0, 1920, 1080, true), new NoticeScreen("B", 1920, 0, 1920, 1080, false, Enabled: false) };
+        var boxes = NoticeLayout.Diagram(screens, new Rectangle(0, 0, 400, 200));
+        Assert.Equal(new[] { "A", "B" }, boxes.Select(b => b.Id));
+        Assert.Equal(new[] { true, false }, boxes.Select(b => b.Enabled));
+    }
+
+    [Fact]
+    public void Bitrate_defaults_to_a_moderate_value_and_spare_displays_are_not_paired()
+    {
+        var c = new LANDock.Core.ClientSettings();
+        Assert.Equal(20000, c.BitrateKbps);
+        Assert.False(c.PairSpareDisplays);
+    }
+
+    [Fact]
     public void No_screens_draws_nothing() =>
         Assert.Empty(NoticeLayout.Diagram(Array.Empty<NoticeScreen>(), new Rectangle(0, 0, 400, 200)));
 }

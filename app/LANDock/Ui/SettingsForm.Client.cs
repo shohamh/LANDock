@@ -10,7 +10,8 @@ namespace LANDock.Ui;
 /// </summary>
 public sealed partial class SettingsForm
 {
-    private CheckBox _discoverLan = null!, _discoverUltra = null!, _autoConnect = null!, _autoDisplays = null!;
+    private CheckBox _discoverLan = null!, _discoverUltra = null!, _autoConnect = null!, _autoDisplays = null!, _pairSpare = null!;
+    private NumericUpDown _bitrate = null!;
     private Label _finderStatus = null!;
     private ListView _laptops = null!;
     private Button _pairBtn = null!, _favBtn = null!, _upBtn = null!, _downBtn = null!, _renameBtn = null!, _removeBtn = null!,
@@ -50,6 +51,23 @@ public sealed partial class SettingsForm
             S.Save();
         };
         col.Controls.Add(_autoDisplays);
+        _pairSpare = new CheckBox { Text = "Also pair the laptop's spare displays (all six), so a screen added later needs no new PIN", AutoSize = true };
+        _pairSpare.CheckedChanged += (_, _) =>
+        {
+            if (_loadingClient) return;
+            S.Client.PairSpareDisplays = _pairSpare.Checked;
+            S.Save();
+        };
+        col.Controls.Add(_pairSpare);
+        _bitrate = new NumericUpDown { Minimum = 0, Maximum = 150, Width = 70 };
+        _bitrate.ValueChanged += (_, _) =>
+        {
+            if (_loadingClient) return;
+            S.Client.BitrateKbps = (int)_bitrate.Value * 1000;
+            S.Save();
+        };
+        col.Controls.Add(Row(new Label { Text = "Video bitrate of each display:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _bitrate,
+            new Label { Text = "Mbit/s (0 = automatic; lower it if Moonlight says the network is not good enough)", AutoSize = true, Margin = new Padding(4, 6, 0, 0) }));
 
         col.Controls.Add(Heading("Laptops, in the order they are tried"));
         col.Controls.Add(Note("Nearby laptops (heard this PC's sound) come first, then the ones seen most recently, then favorites, then the order you set with Move up and Move down. " +
@@ -92,7 +110,7 @@ public sealed partial class SettingsForm
         audio.Items.AddRange("client", "host");
         _streams.Columns.Add(audio);
         _streams.Columns.Add(new DataGridViewTextBoxColumn { Name = "Fps", HeaderText = "FPS", FillWeight = 50 });
-        _streams.Columns.Add(new DataGridViewTextBoxColumn { Name = "Bitrate", HeaderText = "Bitrate kbit/s (0 = auto)", FillWeight = 100 });
+        _streams.Columns.Add(new DataGridViewTextBoxColumn { Name = "Bitrate", HeaderText = "Bitrate kbit/s (0 = general)", FillWeight = 100 });
         var mode = new DataGridViewComboBoxColumn { Name = "Mode", HeaderText = "Mode", FillWeight = 80 };
         mode.Items.AddRange("", "fullscreen", "windowed");
         _streams.Columns.Add(mode);
@@ -139,6 +157,8 @@ public sealed partial class SettingsForm
         _discoverUltra.Checked = S.Client.DiscoverUltrasound;
         _autoConnect.Checked = S.Client.AutoConnect;
         _autoDisplays.Checked = S.Client.AutoDisplays;
+        _pairSpare.Checked = S.Client.PairSpareDisplays;
+        _bitrate.Value = Math.Clamp(S.Client.BitrateKbps / 1000, 0, 150);
         _displayMode.SelectedItem = S.Client.DisplayMode;
         _loadingClient = false;
         RefreshClient();

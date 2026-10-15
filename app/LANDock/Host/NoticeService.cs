@@ -150,9 +150,33 @@ public sealed class NoticeService : IDisposable
         return null;
     }
 
-    private static IReadOnlyList<NoticeScreen> ScreensFor(string desktopName) =>
-        (HostIdentity.ScreensOf(desktopName) ?? new List<MonitorOffer>())
-            .Select(m => new NoticeScreen(m.Id, m.X, m.Y, m.Width, m.Height, m.Primary)).ToList();
+    private static IReadOnlyList<NoticeScreen> ScreensFor(string desktopName)
+    {
+        var choices = HostIdentity.DisplaysOf(desktopName);
+        return (HostIdentity.ScreensOf(desktopName) ?? new List<MonitorOffer>())
+            .Select(m => new NoticeScreen(m.Id, m.X, m.Y, m.Width, m.Height, m.Primary, DisplayPolicies.Choose(choices, m.Id, null).Enabled)).ToList();
+    }
+
+    /// <summary>Turns one screen of a desktop on or off for the laptop (the same choice as the Desktop PCs section, kept with the
+    /// desktop; the other limits of the screen stay). Returns false when the desktop is no longer paired.</summary>
+    public static bool SetScreenEnabled(string desktopId, string screenId, bool enabled)
+    {
+        var d = HostIdentity.Desktops().FirstOrDefault(x => string.Equals(x.UltraId, desktopId, StringComparison.OrdinalIgnoreCase));
+        if (d == null) return false;
+        var list = d.Displays?.ToList() ?? new List<DisplayPolicy>();
+        var i = list.FindIndex(p => p.Name.Equals(screenId, StringComparison.OrdinalIgnoreCase));
+        if (i >= 0) list[i] = list[i] with { Enabled = enabled };
+        else list.Add(new DisplayPolicy(screenId, Enabled: enabled));
+        HostIdentity.SetDisplays(d.Name, list);
+        return true;
+    }
+
+    /// <summary>The notice's screens as they are now (after a screen was turned on or off).</summary>
+    public IReadOnlyList<NoticeScreen> ScreensOfDesktop(string desktopId)
+    {
+        var d = HostIdentity.Desktops().FirstOrDefault(x => string.Equals(x.UltraId, desktopId, StringComparison.OrdinalIgnoreCase));
+        return d == null ? new List<NoticeScreen>() : ScreensFor(d.Name);
+    }
 
     public void Dispose() => Stop();
 }

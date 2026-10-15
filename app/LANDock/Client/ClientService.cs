@@ -379,15 +379,19 @@ public sealed class ClientService
         catch (ControlException e) { Log.Error($"{h.Name}: the displays could not be started: {e.Message}", null); }
 
         var inUse = all.Count(s => s.Enabled && ScreenOf(s, mons) != null);
-        Log.Info($"{h.Name}: pairing all {all.Count} displays of the laptop: {inUse} for this PC's screens, {all.Count - inUse} spare " +
-                 "(a screen added later then needs no PIN)");
+        // by default only the displays for this PC's screens are paired; a screen added later is paired with "Pair..." (a new PIN).
+        // PairSpareDisplays pairs the spare ones too, so that a screen added later needs no PIN
+        var toPair = _settings.Client.PairSpareDisplays ? all : all.Where(s => s.Enabled && ScreenOf(s, mons) != null).ToList();
+        Log.Info(_settings.Client.PairSpareDisplays
+            ? $"{h.Name}: pairing all {all.Count} displays of the laptop: {inUse} for this PC's screens, {all.Count - inUse} spare (a screen added later then needs no PIN)"
+            : $"{h.Name}: pairing the {toPair.Count} display(s) for this PC's screens ({all.Count - toPair.Count} spare left unpaired)");
         var bad = 0;
         var done = 0;
-        foreach (var s in all)
+        foreach (var s in toPair)
         {
             EnsureStream(h, s);
             done++;
-            Log.Info($"{h.Name} {s.Name}: pairing {done} of {all.Count}...");
+            Log.Info($"{h.Name} {s.Name}: pairing {done} of {toPair.Count}...");
             if (await PairOneAsync(h, s, pin!)) Log.Info($"{h.Name} {s.Name}: paired");
             else bad++;
         }
@@ -551,7 +555,8 @@ public sealed class ClientService
                 var args = new List<string> { "stream", HostAddr(h, s), "VD", "--display-mode", "windowed", "--absolute-mouse" };
                 if (!string.IsNullOrWhiteSpace(s.Resolution)) args.AddRange(new[] { "--resolution", s.Resolution });
                 if (s.Fps > 0) args.AddRange(new[] { "--fps", s.Fps.ToString() });
-                if (s.Bitrate > 0) args.AddRange(new[] { "--bitrate", s.Bitrate.ToString() });
+                var bitrate = s.Bitrate > 0 ? s.Bitrate : _settings.Client.BitrateKbps;   // the display's own, else the general one (0 = Moonlight chooses)
+                if (bitrate > 0) args.AddRange(new[] { "--bitrate", bitrate.ToString() });
                 args.Add(s.Audio == "host" ? "--audio-on-host" : "--no-audio-on-host");
                 var argText = string.Join(' ', args.Select(a => a.Any(char.IsWhiteSpace) ? $"\"{a}\"" : a));
                 // run through cmd so Moonlight's console chatter goes to a log file, on pipes of its own

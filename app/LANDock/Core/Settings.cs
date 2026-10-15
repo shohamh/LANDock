@@ -86,6 +86,12 @@ public sealed class ClientSettings
     /// <summary>One display (one connection to the laptop) for each connected screen, turned on automatically when displays start.
     /// Off: only the displays turned on in the Client tab run.</summary>
     public bool AutoDisplays { get; set; } = true;
+    /// <summary>Pair the laptop's spare displays too (all six), so that a screen plugged in later needs no new PIN. Off: only the
+    /// displays for this PC's screens are paired.</summary>
+    public bool PairSpareDisplays { get; set; }
+    /// <summary>The video bitrate of each display, in kbit/s; a display's own bitrate overrides it. 0 lets Moonlight choose, which
+    /// is very high for a big screen and gives "network is not good enough" warnings on a weak network.</summary>
+    public int BitrateKbps { get; set; } = 20000;
     public List<HostProfile> Hosts { get; set; } = new();
 
     [JsonIgnore]
@@ -202,6 +208,7 @@ public sealed class Settings
         Host.PairingWindowMinutes = Math.Clamp(Host.PairingWindowMinutes, 1, 120);
         Host.ControlPort = Math.Clamp(Host.ControlPort, 0, 65535);
         if (Client.DisplayMode != "windowed") Client.DisplayMode = "fullscreen";
+        Client.BitrateKbps = Client.BitrateKbps <= 0 ? 0 : Math.Clamp(Client.BitrateKbps, 500, 150000);
         Client.Hosts ??= new();
         Client.Hosts.RemoveAll(h => string.IsNullOrWhiteSpace(h.Address));
         foreach (var h in Client.Hosts)
