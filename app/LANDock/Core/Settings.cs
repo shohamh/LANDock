@@ -84,7 +84,7 @@ public sealed class ClientSettings
     public string DisplayMode { get; set; } = "fullscreen";
     public bool AutoStartStreams { get; set; }
     /// <summary>One display (one connection to the laptop) for each connected screen, turned on automatically when displays start.
-    /// Off: only the displays turned on in the Client tab run.</summary>
+    /// Off: only the displays turned on in the Desktop tab run.</summary>
     public bool AutoDisplays { get; set; } = true;
     /// <summary>Pair the laptop's spare displays too (all six), so that a screen plugged in later needs no new PIN. Off: only the
     /// displays for this PC's screens are paired.</summary>
@@ -187,14 +187,20 @@ public sealed class Settings
         return new Settings();
     }
 
+    private static readonly object SaveGate = new();
+
     public void Save(string? file = null)
     {
         file ??= Paths.SettingsFile;
-        Normalize();
-        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
-        var tmp = file + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(this, Json));
-        File.Move(tmp, file, true);
+        // one writer at a time: the settings are saved from the window and from background work
+        lock (SaveGate)
+        {
+            Normalize();
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            var tmp = file + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(this, Json));
+            File.Move(tmp, file, true);
+        }
     }
 
     private static bool IsHex(string? s, int length) =>

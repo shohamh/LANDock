@@ -3,7 +3,7 @@ using LANDock.Host;
 namespace LANDock.Ui;
 
 /// <summary>
-/// The Host tab's paired desktops: the list, Forget, and for the selected desktop how each virtual display behaves for it
+/// The Laptop tab's paired desktops: the list, Forget, and for the selected desktop how each virtual display behaves for it
 /// (on or off, the largest size, the largest frame rate). The choices are saved with the desktop and apply to its next connection.
 /// </summary>
 public sealed partial class SettingsForm
@@ -148,13 +148,13 @@ public sealed partial class SettingsForm
         var name = SelectedDesktop();
         _saveLayout.Enabled = name != null;
         if (name == null) { _layoutNote.Text = ""; return; }
-        var d = HostIdentity.Desktops().FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        var d = CachedDesktop(name);
         _layoutPlace.SelectedIndex = LayoutChoices.IndexOf(LayoutChoices.Placements(true), d?.Placement);
         _layoutDuplicate.SelectedIndex = LayoutChoices.IndexOf(LayoutChoices.Duplicates(true), d?.Duplicate);
         var own = d?.Placement != null || d?.Duplicate != null;
         _layoutNote.Text = own
             ? $"'{name}' has its own layout. Choose 'Same as the general setting' to use the general one."
-            : $"'{name}' uses the general layout from the Host tab.";
+            : $"'{name}' uses the general layout from the Settings tab.";
     }
 
     private void SaveLayout()
@@ -163,9 +163,15 @@ public sealed partial class SettingsForm
         if (name == null) return;
         var place = LayoutChoices.Placements(true)[Math.Max(0, _layoutPlace.SelectedIndex)].value;
         var duplicate = LayoutChoices.Duplicates(true)[Math.Max(0, _layoutDuplicate.SelectedIndex)].value;
-        HostIdentity.SetLayout(name, place, duplicate);
-        _layoutNote.Text = $"Saved for '{name}'. The laptop lays out the screens with it from now on.";
-        LoadLayout();
+        _saveLayout.Enabled = false;
+        Bg(() => { HostIdentity.SetLayout(name, place, duplicate); return HostIdentity.Desktops(); }, list =>
+        {
+            _desktopsCache = list;
+            _saveLayout.Enabled = SelectedDesktop() != null;
+            if (SelectedDesktop() == name) LoadLayout();
+            _layoutNote.Text = $"Saved for '{name}'. The laptop lays out the screens with it from now on.";
+            UpdateScreensView();
+        }, _ => _saveLayout.Enabled = true);
     }
 
     /// <summary>The desktop selected in the list, or null.</summary>
@@ -178,8 +184,8 @@ public sealed partial class SettingsForm
         var name = SelectedDesktop();
         _savePolicy.Enabled = name != null;
         if (name == null) { _policyNote.Text = ""; return; }
-        var saved = HostIdentity.DisplaysOf(name);
-        var screens = HostIdentity.ScreensOf(name) ?? new List<MonitorOffer>();
+        var saved = CachedDesktop(name)?.Displays;
+        var screens = CachedDesktop(name)?.Screens ?? new List<MonitorOffer>();
         // one row per screen the desktop reported: its choice is keyed by the screen (plan-monitor-layout.md, step 4)
         foreach (var s in screens.OrderBy(x => x.X).ThenBy(x => x.Y))
         {
@@ -224,17 +230,20 @@ public sealed partial class SettingsForm
             var fps = int.TryParse($"{row.Cells["Fps"].Value}", out var f) ? f : 60;
             list.Add(new DisplayPolicy((string)row.Tag!, Enabled: row.Cells["On"].Value is true, MaxWidth: size.width, MaxHeight: size.height, MaxFps: fps));
         }
-        HostIdentity.SetDisplays(name, list);
-        _policyNote.Text = $"Saved for '{name}'. The new choices apply at its next connection.";
-        _desktopsSignature = "";
-        RefreshDesktops();
+        _savePolicy.Enabled = false;
+        Bg(() => { HostIdentity.SetDisplays(name, list); return HostIdentity.Desktops(); }, saved =>
+        {
+            _desktopsCache = saved;
+            _savePolicy.Enabled = SelectedDesktop() != null;
+            _policyNote.Text = $"Saved for '{name}'. The new choices apply at its next connection.";
+            UpdateScreensView();
+        }, _ => _savePolicy.Enabled = true);
     }
 
     /// <summary>Rebuilds the list only when the paired desktops change, so the selection survives the regular refresh.</summary>
-    private void RefreshDesktops()
+    private void RefreshDesktops(List<HostIdentity.PairedDesktop> list, Dictionary<string, bool> connected)
     {
         if (_desktops == null) return;
-        var list = HostIdentity.Desktops();
         var signature = string.Join("|", list.Select(d => d.Name + "@" + d.Created));
         if (signature != _desktopsSignature)
         {
@@ -250,7 +259,7 @@ public sealed partial class SettingsForm
         foreach (ListViewItem item in _desktops.Items)
         {
             var d = list.FirstOrDefault(x => x.Name.Equals((string)item.Tag!, StringComparison.OrdinalIgnoreCase));
-            if (d != null) item.SubItems[2].Text = _app.Notices.IsConnected(d) ? "connected" : "not connected";
+            if (d != null) item.SubItems[2].Text = connected.GetValueOrDefault(d.Name) ? "connected" : "not connected";
         }
         _desktopsNote.Text = list.Count == 0
             ? "No desktop has paired yet. Forgetting a desktop revokes its token and removes its Moonlight pairings (the host must be running for the Moonlight part)."
@@ -259,30 +268,40 @@ public sealed partial class SettingsForm
     }
 
     /// <summary>Draws the selected desktop's screens with the placement and the laptop displays that Connect would use.</summary>
+    private int _screensToken;
+
     private void UpdateScreensView()
     {
         var name = SelectedDesktop();
-        var d = name == null ? null : HostIdentity.Desktops().FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        var d = name == null ? null : CachedDesktop(name);
+        var token = ++_screensToken;
         if (d == null)
         {
             _screensView.ShowLayout(new List<MonitorOffer>(), null, LaptopPlacement.Left, null);
             return;
         }
-        var screens = HostIdentity.ScreensOf(d.Name) ?? new List<MonitorOffer>();
-        // the laptop's primary screen; its size is what the placement is drawn from
-        var laptop = VddTool.Screens().Values.FirstOrDefault(s => s.Primary) ?? new ScreenInfo("DISPLAY1", 0, 0, 1920, 1080, true);
-        var (placement, duplicate) = _app.Host.LayoutOf(d);
-        var copy = screens.Count == 0 ? null : LaptopLayout.DuplicateScreen(screens, duplicate)?.Id;
-        // the screens this desktop's choice does not extend (kept with the desktop)
-        var notExtended = screens.Select(s => s.Id).Except(NoticeService.ExtendedScreens(screens, d.Displays).Select(s => s.Id), StringComparer.OrdinalIgnoreCase);
-        _screensView.ShowLayout(screens, laptop, placement, copy, notExtended);
+        // the laptop's screens come from a helper process: read in the background, and only the newest request is shown
+        Bg(() =>
+        {
+            var screens = d.Screens ?? new List<MonitorOffer>();
+            // the laptop's primary screen; its size is what the placement is drawn from
+            var laptop = _laptopScreens.Get().Values.FirstOrDefault(s => s.Primary) ?? new ScreenInfo("DISPLAY1", 0, 0, 1920, 1080, true);
+            var (placement, duplicate) = _app.Host.LayoutOf(d);
+            var copy = screens.Count == 0 ? null : LaptopLayout.DuplicateScreen(screens, duplicate)?.Id;
+            // the screens this desktop's choice does not extend (kept with the desktop)
+            var notExtended = screens.Select(s => s.Id).Except(NoticeService.ExtendedScreens(screens, d.Displays).Select(s => s.Id), StringComparer.OrdinalIgnoreCase).ToList();
+            return (screens, laptop, placement, copy, notExtended);
+        }, r =>
+        {
+            if (token == _screensToken) _screensView.ShowLayout(r.screens, r.laptop, r.placement, r.copy, r.notExtended);
+        });
     }
 
     // the laptop asks the selected desktop to connect: its displays start here and its windows start there (as the notice's Connect does)
     private async Task ConnectSelectedDesktop()
     {
         var name = SelectedDesktop();
-        var d = name == null ? null : HostIdentity.Desktops().FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        var d = name == null ? null : CachedDesktop(name);
         if (d == null) return;
         if (string.IsNullOrEmpty(d.UltraId))
         {
@@ -293,7 +312,7 @@ public sealed partial class SettingsForm
         _connectStatus.Text = $"Connecting to '{d.Name}'...";
         try
         {
-            var reason = await _app.Notices.ConnectAsync(d.UltraId);
+            var reason = await Task.Run(() => _app.Notices.ConnectAsync(d.UltraId));
             _connectStatus.Text = reason == null ? $"Asked '{d.Name}' to connect: its windows start in a few seconds." : $"Not connected: {reason}.";
         }
         finally { _connectDesktop.Enabled = _desktops.SelectedItems.Count > 0 && _app.Host.Running; }
@@ -308,7 +327,7 @@ public sealed partial class SettingsForm
         _forget.Enabled = false;
         try
         {
-            var removed = await _app.Host.ForgetDesktopAsync(name);
+            var removed = await Task.Run(() => _app.Host.ForgetDesktopAsync(name));
             MessageBox.Show(this, _app.Host.Running
                 ? $"'{name}' is forgotten: its token is revoked and {removed} Moonlight pairing(s) were removed."
                 : $"'{name}' is forgotten: its token is revoked. Its Moonlight pairings are removed the next time the host runs.",
@@ -316,6 +335,6 @@ public sealed partial class SettingsForm
         }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "LANDock", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         _desktopsSignature = "";
-        RefreshDesktops();
+        RefreshAll();
     }
 }

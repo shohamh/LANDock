@@ -6,7 +6,7 @@ namespace LANDock.Ui;
 
 /// <summary>
 /// Adds a laptop or pairs again with one. The address, the control port and a "Check" button come first: Check asks the
-/// laptop who it is and shows its certificate fingerprint, which the user compares with the laptop's Host tab. Only then
+/// laptop who it is and shows its certificate fingerprint, which the user compares with the laptop's Laptop tab. Only then
 /// can the PIN be entered and paired. For a host that is already known, its saved fingerprint is checked too.
 /// </summary>
 public sealed class HostDialog : Form
@@ -62,7 +62,7 @@ public sealed class HostDialog : Form
         layout.Controls.Add(new Label { Text = "Control port:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 8, 0) }, 0, 2);
         var portRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
         portRow.Controls.Add(_port);
-        portRow.Controls.Add(new Label { Text = "the laptop shows its port on the Host tab (49900 unless taken)", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(8, 6, 0, 0) });
+        portRow.Controls.Add(new Label { Text = "the laptop shows its port on the Laptop tab (49900 unless taken)", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(8, 6, 0, 0) });
         layout.Controls.Add(portRow, 1, 2);
         var checkRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
         checkRow.Controls.Add(_check);
@@ -104,7 +104,7 @@ public sealed class HostDialog : Form
             _fingerprint = fp;
             _info.Text = $"Found: {id.HostName} (LANDock {id.Version})\n" +
                          $"Certificate fingerprint: {fp}\n" +
-                         "Compare it with the fingerprint shown on the laptop's Host tab. " +
+                         "Compare it with the fingerprint shown on the laptop's Laptop tab. " +
                          (id.PairingOpen ? "Pairing is open: enter the PIN." : "Pairing is closed on the laptop: press New pairing PIN there first.");
             _pair.Enabled = id.PairingOpen && Regex.IsMatch(_pin.Text.Trim(), @"^\d{4}$");
             if (!_isNew && string.IsNullOrEmpty(_name.Text)) _name.Text = id.HostName;

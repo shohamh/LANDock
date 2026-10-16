@@ -4,7 +4,7 @@ using LANDock.Ultrasound;
 
 namespace LANDock.Ui;
 
-/// <summary>The Host tab's microphone section: the listen setting, the level bars, and what is being heard.</summary>
+/// <summary>The microphone: the listen setting (Settings tab), and the level bars and what is being heard (Laptop tab).</summary>
 public sealed partial class SettingsForm
 {
     private CheckBox _listen = null!;
@@ -13,20 +13,26 @@ public sealed partial class SettingsForm
     private bool _loadingListen;
     private readonly System.Windows.Forms.Timer _meterTimer = new() { Interval = 200 };
 
-    private void BuildListenBox(FlowLayoutPanel col)
+    /// <summary>The Settings tab's microphone checkbox.</summary>
+    private void BuildListenSetting(FlowLayoutPanel col)
     {
-        col.Controls.Add(Heading("Listen for nearby desktops"));
-        _listen = new CheckBox { Text = "Listen on the microphone for the sound of nearby desktops (off by default)", AutoSize = true };
+        _listen = new CheckBox { Text = "Listen on the microphone for the sound of nearby desktops (off by default; the Laptop tab shows what it hears)", AutoSize = true };
         _listen.CheckedChanged += (_, _) =>
         {
             if (_loadingListen) return;
             S.Host.ListenUltrasound = _listen.Checked;
             S.Save();
-            _app.ApplySensing();
+            ApplySensingBg();
             RefreshListen();
         };
         col.Controls.Add(_listen);
-        col.Controls.Add(Note("When this is on, the bars show the microphone's level in the band of the sound mode (General tab). " +
+    }
+
+    /// <summary>The Laptop tab's view of the microphone: the level bars and what is being heard.</summary>
+    private void BuildListenBox(FlowLayoutPanel col)
+    {
+        col.Controls.Add(Heading("Nearby desktops (microphone)"));
+        col.Controls.Add(Note("Turn listening on in the Settings tab. The bars show the microphone's level in the band of the sound mode. " +
                               "A desktop that plays its id lights up the bars, and the laptop then knows that desktop is nearby. " +
                               "Nothing is recorded or stored."));
         _meter = new LevelMeter { Width = 700 };
@@ -75,7 +81,7 @@ public sealed partial class SettingsForm
             _listenStatus.ForeColor = Color.Firebrick;
             _listenStatus.Text = $"'{l.Device}' delivers almost no sound ({l.RmsDbfs:0} dBFS). In Windows Settings > System > Sound, " +
                                  "check the input level of this microphone, turn off its noise suppression and boost in its properties, " +
-                                 "or pick another microphone in the General tab.";
+                                 "or pick another microphone in the Settings tab.";
             return;
         }
         if (silent)
@@ -94,9 +100,10 @@ public sealed partial class SettingsForm
                              (heardText == "" ? " No desktop heard yet." : " Heard: " + heardText + ".");
     }
 
-    private static string DesktopName(string ultraId)
+    private string DesktopName(string ultraId)
     {
-        var d = HostIdentity.Desktops().FirstOrDefault(x => x.UltraId.Equals(ultraId, StringComparison.OrdinalIgnoreCase));
+        // from the list the last refresh read: this runs every 200 ms and must not read a file
+        var d = _desktopsCache.FirstOrDefault(x => x.UltraId.Equals(ultraId, StringComparison.OrdinalIgnoreCase));
         return d != null ? d.Name : ultraId;
     }
 }

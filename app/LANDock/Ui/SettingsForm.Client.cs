@@ -5,8 +5,8 @@ using LANDock.Discovery;
 namespace LANDock.Ui;
 
 /// <summary>
-/// The Client tab: how this PC finds laptops (LAN, ultrasound, automatic connection), the list of laptops in the order they are
-/// tried, the displays of the selected laptop, and the buttons that act on them.
+/// The Desktop tab: the list of laptops in the order they are tried, the displays of the selected laptop, and the buttons that act
+/// on them (pair, connect, disconnect). How this PC finds laptops and its general display preferences are in the Settings tab.
 /// </summary>
 public sealed partial class SettingsForm
 {
@@ -27,47 +27,12 @@ public sealed partial class SettingsForm
 
     private TabPage BuildClientTab()
     {
-        var page = new TabPage("Client (desktop PC)") { Name = "client", Padding = new Padding(12), AutoScroll = true };
+        var page = new TabPage("Desktop (client)") { Name = "client", Padding = new Padding(12), AutoScroll = true };
         var col = Column();
 
         col.Controls.Add(Heading("Finding laptops"));
-        _discoverLan = new CheckBox { Text = "Find laptops on this network (LAN discovery)", AutoSize = true };
-        _discoverUltra = new CheckBox { Text = "Let laptops hear this PC by sound (plays its id now and then; off by default: keep off near pets)", AutoSize = true };
-        _autoConnect = new CheckBox { Text = "Connect automatically to the first paired laptop that is online (the order below)", AutoSize = true };
-        foreach (var c in new[] { _discoverLan, _discoverUltra, _autoConnect })
-            c.CheckedChanged += (_, _) => FinderChanged();
-        col.Controls.Add(_discoverLan);
-        col.Controls.Add(_discoverUltra);
-        col.Controls.Add(_autoConnect);
         _finderStatus = new Label { AutoSize = true, MaximumSize = new Size(700, 0), Margin = new Padding(0, 4, 0, 4) };
         col.Controls.Add(_finderStatus);
-
-        col.Controls.Add(Heading("Displays"));
-        _autoDisplays = new CheckBox { Text = "One display for each connected screen, turned on automatically when the displays start", AutoSize = true };
-        _autoDisplays.CheckedChanged += (_, _) =>
-        {
-            if (_loadingClient) return;
-            S.Client.AutoDisplays = _autoDisplays.Checked;
-            S.Save();
-        };
-        col.Controls.Add(_autoDisplays);
-        _pairSpare = new CheckBox { Text = "Also pair the laptop's spare displays (all six), so a screen added later needs no new PIN", AutoSize = true };
-        _pairSpare.CheckedChanged += (_, _) =>
-        {
-            if (_loadingClient) return;
-            S.Client.PairSpareDisplays = _pairSpare.Checked;
-            S.Save();
-        };
-        col.Controls.Add(_pairSpare);
-        _bitrate = new NumericUpDown { Minimum = 0, Maximum = 150, Width = 70 };
-        _bitrate.ValueChanged += (_, _) =>
-        {
-            if (_loadingClient) return;
-            S.Client.BitrateKbps = (int)_bitrate.Value * 1000;
-            S.Save();
-        };
-        col.Controls.Add(Row(new Label { Text = "Video bitrate of each display:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _bitrate,
-            new Label { Text = "Mbit/s (0 = automatic; lower it if Moonlight says the network is not good enough)", AutoSize = true, Margin = new Padding(4, 6, 0, 0) }));
 
         col.Controls.Add(Heading("Laptops, in the order they are tried"));
         col.Controls.Add(Note("Nearby laptops (heard this PC's sound) come first, then the ones seen most recently, then favorites, then the order you set with Move up and Move down. " +
@@ -116,11 +81,7 @@ public sealed partial class SettingsForm
         _streams.Columns.Add(mode);
         col.Controls.Add(_streams);
         col.Controls.Add(Note("Each display's size is agreed with the laptop at every start: the size of the monitor it goes to (at most 4K). " +
-                              "Sound \"client\" plays here, \"host\" stays on the laptop. Monitors are numbered from the left; an empty mode uses the default below."));
-
-        _displayMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
-        _displayMode.Items.AddRange(new object[] { "fullscreen", "windowed" });
-        col.Controls.Add(Row(new Label { Text = "Default mode:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _displayMode));
+                              "Sound \"client\" plays here, \"host\" stays on the laptop. Monitors are numbered from the left; an empty mode uses the default mode in the Settings tab."));
 
         _check = Btn("Check connection", CheckConnection);
         _startStreams = Btn("Connect to laptop", StartSelected);
@@ -137,6 +98,51 @@ public sealed partial class SettingsForm
 
         page.Controls.Add(col);
         return page;
+    }
+
+    /// <summary>The Settings tab's section for this PC as a desktop: how it finds laptops, how it shows their displays.</summary>
+    private void BuildClientSettings(FlowLayoutPanel col)
+    {
+        col.Controls.Add(Heading("Desktop PC (client)"));
+        _discoverLan = new CheckBox { Text = "Find laptops on this network (LAN discovery)", AutoSize = true };
+        _discoverUltra = new CheckBox { Text = "Let laptops hear this PC by sound (plays its id now and then; off by default: keep off near pets)", AutoSize = true };
+        _autoConnect = new CheckBox { Text = "Connect automatically to the first paired laptop that is online (the order in the Desktop tab)", AutoSize = true };
+        foreach (var c in new[] { _discoverLan, _discoverUltra, _autoConnect })
+            c.CheckedChanged += (_, _) => FinderChanged();
+        col.Controls.Add(_discoverLan);
+        col.Controls.Add(_discoverUltra);
+        col.Controls.Add(_autoConnect);
+
+        _autoDisplays = new CheckBox { Text = "One display for each connected screen, turned on automatically when the displays start", AutoSize = true };
+        _autoDisplays.CheckedChanged += (_, _) =>
+        {
+            if (_loadingClient) return;
+            S.Client.AutoDisplays = _autoDisplays.Checked;
+            S.Save();
+        };
+        col.Controls.Add(_autoDisplays);
+        _pairSpare = new CheckBox { Text = "Also pair the laptop's spare displays (all six), so a screen added later needs no new PIN", AutoSize = true };
+        _pairSpare.CheckedChanged += (_, _) =>
+        {
+            if (_loadingClient) return;
+            S.Client.PairSpareDisplays = _pairSpare.Checked;
+            S.Save();
+        };
+        col.Controls.Add(_pairSpare);
+        _bitrate = new NumericUpDown { Minimum = 0, Maximum = 150, Width = 70 };
+        _bitrate.ValueChanged += (_, _) =>
+        {
+            if (_loadingClient) return;
+            S.Client.BitrateKbps = (int)_bitrate.Value * 1000;
+            S.Save();
+        };
+        col.Controls.Add(Row(new Label { Text = "Video bitrate of each display:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _bitrate,
+            new Label { Text = "Mbit/s (0 = automatic; lower it if Moonlight says the network is not good enough)", AutoSize = true, Margin = new Padding(4, 6, 0, 0) }));
+        col.Controls.Add(Note("A bitrate typed for one display in the Desktop tab overrides this one."));
+
+        _displayMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
+        _displayMode.Items.AddRange(new object[] { "fullscreen", "windowed" });
+        col.Controls.Add(Row(new Label { Text = "Default mode of the displays:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _displayMode));
     }
 
     private static Button Btn(string text, Func<Task> act)
@@ -236,6 +242,7 @@ public sealed partial class SettingsForm
         _selected = _selectedEntry?.Profile;
         FillStreams();
         RefreshClient();
+        RefreshAll();   // the connection status of the newly selected laptop is read in the background
     }
 
     private void FillStreams()
@@ -295,8 +302,8 @@ public sealed partial class SettingsForm
     /// <summary>Pairs and tells the user how it went: the result is a message, not only a line in the window.</summary>
     private async Task PairAndReport(HostProfile h, string pin)
     {
-        var ok = await _app.Client.PairAsync(h, pin);
-        MessageBox.Show(this, ok ? "All streams are paired." : "Pairing did not work. Is the host running on the laptop, is the PIN current, and is the laptop's firewall open? See the log in the General tab.",
+        var ok = await Task.Run(() => _app.Client.PairAsync(h, pin));
+        MessageBox.Show(this, ok ? "All streams are paired." : "Pairing did not work. Is the host running on the laptop, is the PIN current, and is the laptop's firewall open? See the log in the About & log tab.",
             "LANDock pairing", MessageBoxButtons.OK, ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
@@ -352,7 +359,7 @@ public sealed partial class SettingsForm
         var h = _selected;
         _selected = null;
         _selectedKey = "";
-        await RunClient(() => _app.Client.RemoveAsync(h));
+        await RunClient(() => Task.Run(() => _app.Client.RemoveAsync(h)));
     }
 
     private async Task CheckConnection()
@@ -374,14 +381,14 @@ public sealed partial class SettingsForm
         CommitStreams();
         S.Save();
         var h = _selected;
-        await RunClient(() => _app.Client.StartAsync(h));
+        await RunClient(() => Task.Run(() => _app.Client.StartAsync(h)));
     }
 
     private async Task StopSelected()
     {
         if (_selected == null) return;
         var h = _selected;
-        await RunClient(() => _app.Client.StopAsync(h));
+        await RunClient(() => Task.Run(() => _app.Client.StopAsync(h)));
     }
 
     /// <summary>Runs one client action: buttons are off while it runs, errors are shown under the laptop's details.</summary>
@@ -403,6 +410,7 @@ public sealed partial class SettingsForm
         _keys = new List<string>();
         _hostInfo.ForeColor = SystemColors.ControlText;
         RefreshClient();
+        RefreshAll();
         FillStreams();
         // shown as a box, because the status line is rewritten by the refresh above and the failure would be lost at once
         if (failure != null)
@@ -429,14 +437,14 @@ public sealed partial class SettingsForm
         // the connection now, and which displays are in use: pairing covers all of the laptop's displays, so the spare ones are said
         if (_selected != null)
         {
-            var shown = _app.Client.Status(_selected).Count(s => s.Running);
+            var shown = _statusCache.Count(s => s.Running);
             var inUse = _selected.Streams.Count(s => s.Enabled);
             var total = _selected.Streams.Count;
             _connState.Text = (shown > 0 ? $"Connected: {shown} display(s) of the laptop shown on this PC." : "Not connected.") +
                 (_selected.Paired ? $"  Paired with Moonlight: {total} display(s) of the laptop, {inUse} in use for this PC's screens, {total - inUse} spare." : "");
         }
         else _connState.Text = "";
-        _monitors.Text = string.Join("\n", ClientService.Monitors().Select(m => $"{m.Index}: {m.Bounds.Width}x{m.Bounds.Height} at ({m.Bounds.X},{m.Bounds.Y}){(m.Primary ? "  [primary]" : "")}"));
+        _monitors.Text = string.Join("\n", (_monitorsCache ?? new List<MonitorInfo>()).Select(m => $"{m.Index}: {m.Bounds.Width}x{m.Bounds.Height} at ({m.Bounds.X},{m.Bounds.Y}){(m.Primary ? "  [primary]" : "")}"));
 
         RefreshLaptops();
         var found = _app.Browser.Snapshot().Count;
@@ -452,7 +460,7 @@ public sealed partial class SettingsForm
             _hostInfo.Text = $"{h.Address}:{h.ControlPort}   host id {(h.HostId == "" ? "-" : h.HostId)}   certificate {(h.Fingerprint == "" ? "not confirmed yet" : h.Fingerprint)}" +
                              (h.LastConnected == "" ? "" : $"   last connected {h.LastConnected}");
             _clientStatus.Text = !installed ? "The client component is not installed on this computer"
-                : string.Join("    ", _app.Client.Status(h).Select(s => s.Running ? $"{s.Name}: running on monitor {s.Monitor}" : $"{s.Name}: not running"));
+                : string.Join("    ", _statusCache.Select(s => s.Running ? $"{s.Name}: running on monitor {s.Monitor}" : $"{s.Name}: not running"));
         }
         else if (_selectedEntry != null)
         {

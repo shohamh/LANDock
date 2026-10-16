@@ -6,7 +6,13 @@ using LANDock.Update;
 
 namespace LANDock.Ui;
 
-/// <summary>The settings window: Host, Client, Updates and General/About. Changes are applied with "Save".</summary>
+/// <summary>
+/// The settings window. The main tabs are for doing things: "Laptop (host)" starts the host, shows the PIN and connects desktops,
+/// "Desktop (client)" pairs with laptops and connects to them. "Settings" holds the general preferences of both sides and the
+/// sound, "Updates" and "About &amp; log" are as they were. Changes in "Settings" are applied with "Save" (most apply at once).
+/// Nothing slow runs on the window's thread: what takes time (processes, files, network, audio devices) is gathered in the
+/// background and only the result is put on the screen (see <see cref="Bg{T}"/> and <see cref="RefreshAll"/>).
+/// </summary>
 public sealed partial class SettingsForm : Form
 {
     private readonly AppServices _app;
@@ -14,15 +20,16 @@ public sealed partial class SettingsForm : Form
     private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer _tick = new() { Interval = 1500 };
 
-    // host tab
+    // laptop (host) tab
     private Label _driverNote = null!, _hostState = null!, _pin = null!, _pinInfo = null!, _addresses = null!, _control = null!, _firewall = null!;
     private Button _hostToggle = null!, _newPin = null!, _fwButton = null!;
+    private ListView _instances = null!;
+
+    // settings tab
     private CheckBox _hostAuto = null!, _keepAwake = null!, _showNotices = null!;
     private ComboBox _placeGeneral = null!, _duplicateGeneral = null!;
     private NumericUpDown _pairMinutes = null!;
-    private ListView _instances = null!;
-
-    // client tab
+    private CheckBox _startWithWindows = null!;
 
     // updates tab
     private CheckBox _updEnabled = null!, _updPre = null!;
@@ -31,9 +38,9 @@ public sealed partial class SettingsForm : Form
     private TextBox _updRepo = null!, _updToken = null!, _updNotes = null!;
     private Label _updStatus = null!, _versions = null!;
     private Button _updCheck = null!, _updInstall = null!, _updSkip = null!;
+    private string? _installedHost, _installedClient;   // read in the background (null until the first pass)
 
-    // general tab
-    private CheckBox _startWithWindows = null!;
+    // about tab
     private TextBox _logBox = null!;
 
     public SettingsForm(AppServices app)
@@ -52,14 +59,15 @@ public sealed partial class SettingsForm : Form
         var close = new Button { Text = "Close", AutoSize = true, MinimumSize = new Size(90, 28) };
         var save = new Button { Text = "Save", AutoSize = true, MinimumSize = new Size(90, 28) };
         close.Click += (_, _) => Hide();
-        save.Click += (_, _) => SaveSettings(true);
+        save.Click += async (_, _) => await SaveSettingsAsync(true);
         buttons.Controls.AddRange(new Control[] { close, save });
         AcceptButton = save;
 
         _tabs.TabPages.Add(BuildHostTab());
         _tabs.TabPages.Add(BuildClientTab());
+        _tabs.TabPages.Add(BuildSettingsTab());
         _tabs.TabPages.Add(BuildUpdatesTab());
-        _tabs.TabPages.Add(BuildGeneralTab());
+        _tabs.TabPages.Add(BuildAboutTab());
         Controls.Add(_tabs);
         Controls.Add(buttons);
 
@@ -75,8 +83,10 @@ public sealed partial class SettingsForm : Form
         Log.Line += OnLogLine;
     }
 
+    /// <summary>Opens a tab by name: host, client, settings, updates or about ("general" is the old name of settings).</summary>
     public void ShowTab(string name)
     {
+        if (name == "general") name = "settings";
         Show(); Activate();
         foreach (TabPage t in _tabs.TabPages) if (t.Name == name) _tabs.SelectedTab = t;
     }
@@ -84,15 +94,108 @@ public sealed partial class SettingsForm : Form
     private void BeginInvokeSafe(Action a) { try { if (IsHandleCreated && !IsDisposed) BeginInvoke(a); } catch { } }
 
     // =================================================================================================================
-    // Host tab
+    // Work that must not block the window
+    // =================================================================================================================
+
+    /// <summary>Runs 'work' on a worker thread and hands its result to 'done' on the window's thread. A failure is logged (and given to 'fail').</summary>
+    private void Bg<T>(Func<T> work, Action<T> done, Action<Exception>? fail = null)
+    {
+        Task.Run(work).ContinueWith(t => BeginInvokeSafe(() =>
+        {
+            if (t.IsFaulted)
+            {
+                var ex = t.Exception!.GetBaseException();
+                Log.Error("settings window", ex);
+                fail?.Invoke(ex);
+            }
+            else if (t.IsCompletedSuccessfully) done(t.Result);
+        }));
+    }
+
+    /// <summary>A value that is slow to get (a process, the certificate) and changes rarely: kept for a while. Only read from worker threads.</summary>
+    private sealed class Cached<T>
+    {
+        private readonly Func<T> _get;
+        private readonly TimeSpan _ttl;
+        private readonly object _gate = new();
+        private T _value = default!;
+        private DateTime _at = DateTime.MinValue;
+        public Cached(Func<T> get, TimeSpan ttl) { _get = get; _ttl = ttl; }
+        public T Get()
+        {
+            lock (_gate)
+            {
+                if (DateTime.UtcNow - _at > _ttl) { _value = _get(); _at = DateTime.UtcNow; }
+                return _value;
+            }
+        }
+        public void Invalidate() { lock (_gate) _at = DateTime.MinValue; }
+    }
+
+    private readonly Cached<bool> _firewallRule = new(() => Firewall.RuleExists(), TimeSpan.FromSeconds(30));
+    private readonly Cached<string> _fingerprint = new(() => HostIdentity.Fingerprint(), TimeSpan.FromMinutes(10));
+    private readonly Cached<List<(string name, string address)>> _localAddresses = new(HostSetup.LocalAddresses, TimeSpan.FromSeconds(10));
+    private readonly Cached<Dictionary<string, ScreenInfo>> _laptopScreens = new(VddTool.Screens, TimeSpan.FromSeconds(5));
+
+    /// <summary>Everything one refresh pass needs that is slow to read: gathered on a worker thread, shown on the window's thread.</summary>
+    private sealed record HostFacts(List<(string name, string address)> Addresses, bool Firewall, string Fingerprint, List<InstanceStatus> Instances,
+        List<HostIdentity.PairedDesktop> Desktops, Dictionary<string, bool> Connected);
+
+    private sealed record Facts(HostFacts Host, List<MonitorInfo> Monitors, List<StreamStatus> Status, string InstalledHost, string InstalledClient);
+
+    private bool _refreshing, _refreshAgain;
+    private List<MonitorInfo>? _monitorsCache;
+    private List<StreamStatus> _statusCache = new();
+    private List<HostIdentity.PairedDesktop> _desktopsCache = new();
+
+    private HostIdentity.PairedDesktop? CachedDesktop(string name) =>
+        _desktopsCache.FirstOrDefault(d => d.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    private Facts Gather(HostProfile? selected, bool hostInstalled)
+    {
+        var desktops = HostIdentity.Desktops();
+        var connected = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach (var d in desktops) connected[d.Name] = _app.Notices.IsConnected(d);
+        var host = new HostFacts(_localAddresses.Get(), hostInstalled && _firewallRule.Get(), hostInstalled ? _fingerprint.Get() : "",
+            _app.Host.Snapshot(), desktops, connected);
+        return new Facts(host, ClientService.Monitors(), selected == null ? new() : _app.Client.Status(selected),
+            Updater.InstalledHost, Updater.InstalledClient);
+    }
+
+    /// <summary>Brings the window up to date. The cheap parts (host state, PIN) are set at once; the slow facts are read in the
+    /// background, and a pass that is still running makes the next one wait (so passes never pile up).</summary>
+    private void RefreshAll()
+    {
+        if (!Visible && !IsHandleCreated) return;
+        RefreshLive();
+        if (_refreshing) { _refreshAgain = true; return; }
+        _refreshing = true;
+        var selected = _selected;
+        var hostInstalled = Paths.HostInstalled;
+        Task.Run(() => Gather(selected, hostInstalled)).ContinueWith(t => BeginInvokeSafe(() =>
+        {
+            _refreshing = false;
+            try
+            {
+                if (t.IsFaulted) Log.Error("settings window refresh", t.Exception!.GetBaseException());
+                else if (t.IsCompletedSuccessfully) ApplyFacts(t.Result);
+            }
+            catch (Exception ex) { Log.Error("settings window refresh", ex); }
+            if (_refreshAgain) { _refreshAgain = false; RefreshAll(); }
+        }));
+    }
+
+    // =================================================================================================================
+    // Laptop (host) tab
     // =================================================================================================================
     private TabPage BuildHostTab()
     {
-        var page = new TabPage("Host (laptop)") { Name = "host", Padding = new Padding(12), AutoScroll = true };
+        var page = new TabPage("Laptop (host)") { Name = "host", Padding = new Padding(12), AutoScroll = true };
         var col = Column();
 
         col.Controls.Add(Heading("This computer shares its virtual displays"));
-        col.Controls.Add(Note("Run the host on the laptop. The desktop PC then shows the laptop's extra displays on its own monitors."));
+        col.Controls.Add(Note("Run the host on the laptop. The desktop PC then shows the laptop's extra displays on its own monitors. " +
+                              "How the host behaves (start with LANDock, notices, layout) is set in the Settings tab."));
 
         _hostState = new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(0, 6, 12, 6) };
         _hostToggle = new Button { AutoSize = true, MinimumSize = new Size(110, 28), Margin = new Padding(0, 2, 0, 2) };
@@ -108,7 +211,7 @@ public sealed partial class SettingsForm : Form
         _newPin.Click += (_, _) => { _app.Host.NewPairingWindow(); RefreshAll(); };
         pairBox.Controls.Add(Row(_pin, _pinInfo, _newPin));
         col.Controls.Add(pairBox);
-        col.Controls.Add(Note("On the desktop PC enter this PIN under Client > Pair. New desktop PCs can only pair while the window is open."));
+        col.Controls.Add(Note("On the desktop PC enter this PIN under Desktop > Pair. New desktop PCs can only pair while the window is open."));
 
         _addresses = new Label { AutoSize = true, MaximumSize = new Size(700, 0) };
         col.Controls.Add(Heading("Addresses of this laptop"));
@@ -123,30 +226,16 @@ public sealed partial class SettingsForm : Form
         _fwButton.Click += (_, _) =>
         {
             _fwButton.Enabled = false;
-            var ok = Firewall.AddRuleElevated();
-            MessageBox.Show(this, ok ? "The firewall rule was added (Private networks)." : "The rule was not added. Windows asks for administrator permission once; it was cancelled or failed.",
-                "LANDock", MessageBoxButtons.OK, ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-            RefreshAll();
+            Bg(() => Firewall.AddRuleElevated(), ok =>
+            {
+                _firewallRule.Invalidate();
+                MessageBox.Show(this, ok ? "The firewall rule was added (Private networks)." : "The rule was not added. Windows asks for administrator permission once; it was cancelled or failed.",
+                    "LANDock", MessageBoxButtons.OK, ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                _fwButton.Enabled = true;
+                RefreshAll();
+            }, _ => _fwButton.Enabled = true);
         };
         col.Controls.Add(Row(_firewall, _fwButton));
-
-        _hostAuto = new CheckBox { Text = "Start the host automatically when LANDock starts", AutoSize = true };
-        _keepAwake = new CheckBox { Text = "Keep this laptop awake while the host runs (a locked laptop cannot be controlled)", AutoSize = true };
-        _pairMinutes = new NumericUpDown { Minimum = 1, Maximum = 120, Width = 60 };
-        _showNotices = new CheckBox { Text = "Show a small notice above the taskbar when a paired desktop is nearby (it never takes the focus)", AutoSize = true };
-        col.Controls.Add(_hostAuto);
-        col.Controls.Add(_keepAwake);
-        col.Controls.Add(_showNotices);
-        _placeGeneral = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
-        _duplicateGeneral = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
-        LayoutChoices.Fill(_placeGeneral, LayoutChoices.Placements(withDefault: false));
-        LayoutChoices.Fill(_duplicateGeneral, LayoutChoices.Duplicates(withDefault: false));
-        _placeGeneral.SelectedIndexChanged += (_, _) => SaveGeneralLayout();
-        _duplicateGeneral.SelectedIndexChanged += (_, _) => SaveGeneralLayout();   // writes only when a value really changed
-        col.Controls.Add(Row(new Label { Text = "Laptop screen sits (general):", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _placeGeneral));
-        col.Controls.Add(Row(new Label { Text = "Duplicate the laptop screen onto (general):", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _duplicateGeneral));
-        col.Controls.Add(new Label { Text = "These apply to every desktop unless a desktop has its own layout (Desktop PCs, below).", AutoSize = true, ForeColor = SystemColors.GrayText });
-        col.Controls.Add(Row(new Label { Text = "Pairing window:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _pairMinutes, new Label { Text = "minutes after the host starts", AutoSize = true, Margin = new Padding(4, 6, 0, 0) }));
 
         _instances = new ListView { View = View.Details, Width = 700, Height = 100, FullRowSelect = true, GridLines = true };
         _instances.Columns.Add("Display", 120); _instances.Columns.Add("Port", 80); _instances.Columns.Add("State", 160); _instances.Columns.Add("Virtual display", 160);
@@ -164,11 +253,11 @@ public sealed partial class SettingsForm : Form
         _hostToggle.Enabled = false;
         try
         {
-            if (_app.Host.Running) await _app.Host.StopAsync();
+            if (_app.Host.Running) await Task.Run(() => _app.Host.StopAsync());
             else
             {
-                SaveSettings(false);
-                await _app.Host.StartAsync();
+                await SaveSettingsAsync(false);
+                await Task.Run(() => _app.Host.StartAsync());
             }
         }
         catch (Exception ex)
@@ -177,6 +266,45 @@ public sealed partial class SettingsForm : Form
             MessageBox.Show(this, ex.Message, "LANDock host", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         RefreshAll();
+    }
+
+    // =================================================================================================================
+    // Settings tab: the general preferences of the laptop side, the desktop side and the sound
+    // =================================================================================================================
+    private TabPage BuildSettingsTab()
+    {
+        var page = new TabPage("Settings") { Name = "settings", Padding = new Padding(12), AutoScroll = true };
+        var col = Column();
+
+        col.Controls.Add(Heading("General"));
+        _startWithWindows = new CheckBox { Text = "Start LANDock when I sign in to Windows (it lives in the notification area)", AutoSize = true };
+        col.Controls.Add(_startWithWindows);
+
+        col.Controls.Add(Heading("Laptop (host)"));
+        _hostAuto = new CheckBox { Text = "Start the host automatically when LANDock starts", AutoSize = true };
+        _keepAwake = new CheckBox { Text = "Keep this laptop awake while the host runs (a locked laptop cannot be controlled)", AutoSize = true };
+        _pairMinutes = new NumericUpDown { Minimum = 1, Maximum = 120, Width = 60 };
+        _showNotices = new CheckBox { Text = "Show a small notice above the taskbar when a paired desktop is nearby (it never takes the focus)", AutoSize = true };
+        col.Controls.Add(_hostAuto);
+        col.Controls.Add(_keepAwake);
+        col.Controls.Add(_showNotices);
+        BuildListenSetting(col);
+        _placeGeneral = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
+        _duplicateGeneral = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
+        LayoutChoices.Fill(_placeGeneral, LayoutChoices.Placements(withDefault: false));
+        LayoutChoices.Fill(_duplicateGeneral, LayoutChoices.Duplicates(withDefault: false));
+        _placeGeneral.SelectedIndexChanged += (_, _) => SaveGeneralLayout();
+        _duplicateGeneral.SelectedIndexChanged += (_, _) => SaveGeneralLayout();   // writes only when a value really changed
+        col.Controls.Add(Row(new Label { Text = "Laptop screen sits (general):", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _placeGeneral));
+        col.Controls.Add(Row(new Label { Text = "Duplicate the laptop screen onto (general):", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _duplicateGeneral));
+        col.Controls.Add(Note("These apply to every desktop unless a desktop has its own layout (Laptop tab, under Desktop PCs)."));
+        col.Controls.Add(Row(new Label { Text = "Pairing window:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _pairMinutes, new Label { Text = "minutes after the host starts", AutoSize = true, Margin = new Padding(4, 6, 0, 0) }));
+
+        BuildClientSettings(col);
+        BuildSoundBox(col);
+
+        page.Controls.Add(col);
+        return page;
     }
 
     // =================================================================================================================
@@ -210,7 +338,7 @@ public sealed partial class SettingsForm : Form
         _updSkip = new Button { Text = "Skip this version", AutoSize = true, MinimumSize = new Size(120, 28), Visible = false };
         _updCheck.Click += async (_, _) =>
         {
-            _updCheck.Enabled = false; SaveSettings(false);
+            _updCheck.Enabled = false; await SaveSettingsAsync(false);
             try { var c = await _app.Updater.CheckAsync(); if (c is { Any: false }) _updStatus.Text = "LANDock is up to date."; }
             catch (Exception ex) { _updStatus.Text = ex.Message; }
             _updCheck.Enabled = true; RefreshUpdates();
@@ -234,34 +362,35 @@ public sealed partial class SettingsForm : Form
     {
         var check = _app.Updater.Latest;
         if (check is not { Any: true }) return;
-        var busy = (_app.Host.Running && !_app.Host.IsIdle()) || _app.Client.AnyRunning();
-        if (busy && MessageBox.Show(this, "A stream is active. Installing the update will interrupt it. Continue?", "LANDock update", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         _updInstall.Enabled = false;
+        var busy = await Task.Run(() => (_app.Host.Running && !_app.Host.IsIdle()) || _app.Client.AnyRunning());
+        if (busy && MessageBox.Show(this, "A stream is active. Installing the update will interrupt it. Continue?", "LANDock update", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+        {
+            _updInstall.Enabled = true;
+            return;
+        }
         var progress = new Progress<string>(s => _updStatus.Text = s);
-        var ok = await _app.Updater.ApplyAsync(check, default, progress);
+        var ok = await Task.Run(() => _app.Updater.ApplyAsync(check, default, progress));
         _updStatus.Text = ok ? "Update installed." : _app.Updater.LastError;
         _updInstall.Enabled = true;
         RefreshAll();
     }
 
     // =================================================================================================================
-    // General tab
+    // About & log tab
     // =================================================================================================================
-    private TabPage BuildGeneralTab()
+    private TabPage BuildAboutTab()
     {
-        var page = new TabPage("General / About") { Name = "general", Padding = new Padding(12) };
+        var page = new TabPage("About & log") { Name = "about", Padding = new Padding(12) };
         var col = Column();
-        _startWithWindows = new CheckBox { Text = "Start LANDock when I sign in to Windows (it lives in the notification area)", AutoSize = true };
-        col.Controls.Add(_startWithWindows);
         col.Controls.Add(Heading($"LANDock {AppInfo.Version}"));
         col.Controls.Add(Note("Free software (GPL-3.0). Built on Apollo (host), Moonlight (client) and the SudoVDA virtual display driver. See NOTICE.md in the project for credits."));
         var links = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
         links.Controls.Add(Link("Project page", () => OpenUrl($"https://github.com/{S.Updates.Repository}")));
         links.Controls.Add(Link("Open the data folder", () => OpenUrl(Paths.DataDir)));
         col.Controls.Add(links);
-        BuildSoundBox(col);
         col.Controls.Add(Heading("Log"));
-        _logBox = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Width = 700, Height = 300, Font = new Font("Consolas", 9) };
+        _logBox = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Width = 700, Height = 400, Font = new Font("Consolas", 9) };
         col.Controls.Add(_logBox);
         page.Controls.Add(col);
         return page;
@@ -293,12 +422,20 @@ public sealed partial class SettingsForm : Form
         _updPre.Checked = S.Updates.IncludePrereleases; _updRepo.Text = S.Updates.Repository; _updToken.Text = S.Updates.Token;
         _startWithWindows.Checked = Startup.IsEnabled();
         _driverNote.Text = VddTool.DriverHelp;
-        _driverNote.Visible = Paths.HostInstalled && !VddTool.DriverPresent();   // checked when the window opens, not on every refresh
-        _logBox.Text = Log.Tail(300);
-        _logBox.SelectionStart = _logBox.TextLength; _logBox.ScrollToCaret();
+        _driverNote.Visible = false;
+        // the driver check starts a helper process and the log is a file: both are read in the background, when the window opens
+        Bg(() => (Paths.HostInstalled && !VddTool.DriverPresent(), Log.Tail(300)), r =>
+        {
+            _driverNote.Visible = r.Item1;
+            _logBox.Text = r.Item2;
+            _logBox.SelectionStart = _logBox.TextLength; _logBox.ScrollToCaret();
+        });
     }
 
-    public void SaveSettings(bool announce)
+    public void SaveSettings(bool announce) => _ = SaveSettingsAsync(announce);
+
+    /// <summary>Takes the form's values at once, then writes them and applies them (start at sign-in, microphone, updates) in the background.</summary>
+    public async Task SaveSettingsAsync(bool announce)
     {
         S.Host.AutoStart = _hostAuto.Checked; S.Host.KeepAwake = _keepAwake.Checked; S.Host.PairingWindowMinutes = (int)_pairMinutes.Value;
         S.Host.ShowNotices = _showNotices.Checked;
@@ -308,17 +445,31 @@ public sealed partial class SettingsForm : Form
         S.Updates.Repository = _updRepo.Text.Trim(); S.Updates.Token = _updToken.Text.Trim();
         S.StartWithWindows = _startWithWindows.Checked;
         S.Save();
-        Startup.Apply(S.StartWithWindows);
-        _app.ApplySensing();
-        _app.Updater.Start();
+        try
+        {
+            await Task.Run(() =>
+            {
+                Startup.Apply(S.StartWithWindows);
+                _app.ApplySensing();
+                _app.Updater.Start();
+            });
+        }
+        catch (Exception ex) { Log.Error("save settings", ex); }
         if (announce) MessageBox.Show(this, "Settings saved.", "LANDock", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
+    /// <summary>Applies the sensing settings (microphone, speakers, discovery) without holding up the window: starting a device can take a while.</summary>
+    private void ApplySensingBg() => Task.Run(() =>
+    {
+        try { _app.ApplySensing(); }
+        catch (Exception ex) { Log.Error("sensing", ex); }
+    });
+
     private static int ToInt(object? v, int fallback) => int.TryParse($"{v}", out var i) ? i : fallback;
 
-    private void RefreshAll()
+    /// <summary>The cheap part of a refresh: what the host is doing now (kept in memory), so a button press shows its effect at once.</summary>
+    private void RefreshLive()
     {
-        if (!Visible && !IsHandleCreated) return;
         var host = _app.Host;
         var hostInstalled = Paths.HostInstalled;
         foreach (var c in new Control[] { _hostToggle, _newPin, _fwButton, _hostAuto, _keepAwake, _pairMinutes }) c.Enabled = hostInstalled;
@@ -330,21 +481,36 @@ public sealed partial class SettingsForm : Form
         _pin.Text = host.Running ? host.Pin : "----";
         var left = host.PairingUntil - DateTime.Now;
         _pinInfo.Text = !host.Running ? "Start the host to get a PIN" : left.TotalSeconds > 0 ? $"pairing open for {left:m\\:ss} more" : "pairing window closed (press New pairing PIN)";
-        var addrs = HostSetup.LocalAddresses();
         _control.Text = $"control port {S.Host.ControlPort}" + (S.Host.ControlPort == 0 ? " (chosen when the host starts)" : "") +
-                        (hostInstalled ? $"\ncertificate fingerprint {HostIdentity.Fingerprint()}" : "");
-        _addresses.Text = addrs.Count == 0 ? "no network connection found" : string.Join("    ", addrs.Select(a => $"{a.address}  ({a.name})"));
-        var fw = hostInstalled && Firewall.RuleExists();
-        _firewall.Text = fw ? "Windows Firewall: open for LANDock on Private networks" : "Windows Firewall: not open yet (the desktop PC cannot connect until it is)";
-        _fwButton.Visible = !fw;
+                        (hostInstalled && _fingerprintText != "" ? $"\ncertificate fingerprint {_fingerprintText}" : "");
+        RefreshClient();
+    }
+
+    private string _fingerprintText = "";
+
+    /// <summary>Shows what a background pass read.</summary>
+    private void ApplyFacts(Facts f)
+    {
+        var hostInstalled = Paths.HostInstalled;
+        _fingerprintText = f.Host.Fingerprint;
+        _control.Text = $"control port {S.Host.ControlPort}" + (S.Host.ControlPort == 0 ? " (chosen when the host starts)" : "") +
+                        (hostInstalled ? $"\ncertificate fingerprint {f.Host.Fingerprint}" : "");
+        _addresses.Text = f.Host.Addresses.Count == 0 ? "no network connection found" : string.Join("    ", f.Host.Addresses.Select(a => $"{a.address}  ({a.name})"));
+        _firewall.Text = f.Host.Firewall ? "Windows Firewall: open for LANDock on Private networks" : "Windows Firewall: not open yet (the desktop PC cannot connect until it is)";
+        _fwButton.Visible = !f.Host.Firewall;
 
         _instances.BeginUpdate();
         _instances.Items.Clear();
-        foreach (var i in host.Snapshot())
+        var host = _app.Host;
+        foreach (var i in f.Host.Instances)
             _instances.Items.Add(new ListViewItem(new[] { i.Label, i.Port.ToString(), i.Up ? "ready" : (host.Running || host.Starting ? "starting" : "stopped"), i.Display ?? "—" }));
         _instances.EndUpdate();
-        RefreshDesktops();
+        _desktopsCache = f.Host.Desktops;
+        RefreshDesktops(f.Host.Desktops, f.Host.Connected);
 
+        _monitorsCache = f.Monitors;
+        _statusCache = f.Status;
+        _installedHost = f.InstalledHost; _installedClient = f.InstalledClient;
         RefreshClient();
         RefreshUpdates();
     }
@@ -352,8 +518,9 @@ public sealed partial class SettingsForm : Form
     private void RefreshUpdates()
     {
         if (_updStatus == null) return;
-        var host = Updater.InstalledHost; var client = Updater.InstalledClient;
-        _versions.Text = $"Program {AppInfo.Version}    Host {(host == "" ? "not installed" : host)}    Client {(client == "" ? "not installed" : client)}";
+        var host = _installedHost; var client = _installedClient;
+        _versions.Text = host == null || client == null ? $"Program {AppInfo.Version}"
+            : $"Program {AppInfo.Version}    Host {(host == "" ? "not installed" : host)}    Client {(client == "" ? "not installed" : client)}";
         var u = _app.Updater;
         if (u.Applying) return;
         var latest = u.Latest;

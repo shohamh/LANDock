@@ -73,7 +73,15 @@ public sealed class AppServices
     }
 
     /// <summary>Starts or stops the sensing services to match the settings. Safe to call at any time.</summary>
+    private readonly object _sensingGate = new();
+
     public void ApplySensing()
+    {
+        // the settings window applies it from a worker thread (starting a device takes a while): one at a time
+        lock (_sensingGate) ApplySensingLocked();
+    }
+
+    private void ApplySensingLocked()
     {
         // restarts the microphone or speakers when the mode or the chosen device changes
         var listenSig = $"{Settings.Sound.Mode}|{Settings.Sound.InputDeviceId}";
@@ -278,7 +286,7 @@ public sealed class TrayApp : ApplicationContext
 
     private async Task ToggleHost()
     {
-        try { if (_app.Host.Running) await _app.Host.StopAsync(); else await _app.Host.StartAsync(); }
+        try { if (_app.Host.Running) await Task.Run(() => _app.Host.StopAsync()); else await Task.Run(() => _app.Host.StartAsync()); }
         catch (Exception ex) { Balloon("LANDock host", ex.Message, ToolTipIcon.Warning); }
         RefreshMenu();
         if (_app.Host.Running) Balloon("LANDock host is ready", $"Pairing PIN {_app.Host.Pin} (open {_app.Settings.Host.PairingWindowMinutes} minutes).", ToolTipIcon.Info);
@@ -289,7 +297,7 @@ public sealed class TrayApp : ApplicationContext
         var h = _app.ClientEntries().FirstOrDefault(e => e.Saved && e.Paired && e.Online)?.Profile ?? _app.Settings.Client.DefaultHost;
         try
         {
-            if (h == null) throw new InvalidOperationException("no host yet: open the Client tab and add one");
+            if (h == null) throw new InvalidOperationException("no host yet: open the Desktop tab and add one");
             if (_app.Client.IsRunning(h)) await _app.Client.StopAsync(h); else await _app.Client.StartAsync(h);
         }
         catch (Exception ex) { Balloon("LANDock client", ex.Message, ToolTipIcon.Warning); _form.ShowTab("client"); }

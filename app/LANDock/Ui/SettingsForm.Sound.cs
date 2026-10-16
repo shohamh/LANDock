@@ -2,7 +2,7 @@ using LANDock.Ultrasound;
 
 namespace LANDock.Ui;
 
-/// <summary>The General tab's sound section: the sound mode, and the microphone and speakers the app uses.</summary>
+/// <summary>The Settings tab's sound section: the sound mode, and the microphone and speakers the app uses.</summary>
 public sealed partial class SettingsForm
 {
     private ComboBox _soundMode = null!, _inputDevice = null!, _outputDevice = null!;
@@ -34,7 +34,7 @@ public sealed partial class SettingsForm
         col.Controls.Add(Row(new Label { Text = "Speakers (desktop):", AutoSize = true, Margin = new Padding(0, 6, 8, 0), Width = 110 }, _outputDevice));
 
         var refresh = new Button { Text = "Refresh devices", AutoSize = true, MinimumSize = new Size(120, 28) };
-        refresh.Click += (_, _) => { FillDevices(); RefreshSoundNote(); };
+        refresh.Click += (_, _) => FillDevicesAsync();
         col.Controls.Add(Row(refresh));
         _soundNote = new Label { AutoSize = true, MaximumSize = new Size(700, 0), Margin = new Padding(0, 4, 0, 4) };
         col.Controls.Add(_soundNote);
@@ -44,22 +44,29 @@ public sealed partial class SettingsForm
                               "Virtual devices (Steam Streaming, virtual cables) do not reach the air; \"automatic\" avoids them."));
     }
 
+    private List<AudioDevices.Device> _inputs = new(), _outputs = new();
+
     private void LoadSound()
     {
         _loadingSound = true;
-        FillDevices();
         _soundMode.SelectedIndex = S.Sound.Mode == SoundMode.Ultrasound ? 1 : 0;
         _loadingSound = false;
-        RefreshSoundNote();
+        FillDevicesAsync();
     }
 
-    /// <summary>Fills the device lists from this PC, keeping the saved choice selected (or noting that it is not connected).</summary>
-    private void FillDevices()
+    /// <summary>Lists the microphones and speakers of this PC (asking Windows can take a while, so it is done in the background),
+    /// keeping the saved choice selected (or noting that it is not connected).</summary>
+    private void FillDevicesAsync()
     {
-        _loadingSound = true;
-        FillCombo(_inputDevice, AudioDevices.Inputs(), S.Sound.InputDeviceId);
-        FillCombo(_outputDevice, AudioDevices.Outputs(), S.Sound.OutputDeviceId);
-        _loadingSound = false;
+        Bg(() => (AudioDevices.Inputs(), AudioDevices.Outputs()), d =>
+        {
+            (_inputs, _outputs) = d;
+            _loadingSound = true;
+            FillCombo(_inputDevice, _inputs, S.Sound.InputDeviceId);
+            FillCombo(_outputDevice, _outputs, S.Sound.OutputDeviceId);
+            _loadingSound = false;
+            RefreshSoundNote();
+        });
     }
 
     private static void FillCombo(ComboBox box, List<AudioDevices.Device> devices, string savedId)
@@ -80,7 +87,7 @@ public sealed partial class SettingsForm
         S.Sound.InputDeviceId = (_inputDevice.SelectedItem as DeviceChoice)?.Id ?? "";
         S.Sound.OutputDeviceId = (_outputDevice.SelectedItem as DeviceChoice)?.Id ?? "";
         S.Save();
-        _app.ApplySensing();
+        ApplySensingBg();
         _meter.SetBand(SoundMode.Band(S.Sound.Mode).low, SoundMode.Band(S.Sound.Mode).high);
         RefreshSoundNote();
     }
@@ -88,8 +95,8 @@ public sealed partial class SettingsForm
     private void RefreshSoundNote()
     {
         if (_soundNote == null) return;
-        var inputs = AudioDevices.Inputs().Count;
-        var outputs = AudioDevices.Outputs().Count;
+        var inputs = _inputs.Count;
+        var outputs = _outputs.Count;
         _soundNote.ForeColor = SystemColors.GrayText;
         _soundNote.Text = $"Mode: {SoundMode.Label(S.Sound.Mode)}. {inputs} microphone(s) and {outputs} speaker output(s) found on this PC.";
     }

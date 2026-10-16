@@ -55,7 +55,7 @@ public sealed class ClientService
             ? mons.FirstOrDefault(m => m.Index == s.Monitor)
             : mons.FirstOrDefault(m => m.Key.Equals(s.ScreenId, StringComparison.OrdinalIgnoreCase) || m.Name.Equals(s.ScreenId, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>Shows a display on the screen with this number (as the Client tab lists them), keeping its id in step.</summary>
+    /// <summary>Shows a display on the screen with this number (as the Desktop tab lists them), keeping its id in step.</summary>
     public static void AssignMonitor(StreamSettings s, int index)
     {
         s.Monitor = index;
@@ -530,10 +530,10 @@ public sealed class ClientService
         // the laptop may leave out displays that are off for this PC: those are not started
         var offered = agreed.Select(a => a.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var left = chosen.Where(x => !offered.Contains(x.Name)).Select(x => x.Name).ToList();
-        if (left.Count > 0) Log.Info($"{h.Name}: not offered to this PC (off in the laptop's Host tab): {string.Join(", ", left)}");
+        if (left.Count > 0) Log.Info($"{h.Name}: not offered to this PC (off in the laptop's Laptop tab): {string.Join(", ", left)}");
         chosen = chosen.Where(x => offered.Contains(x.Name)).ToList();
         if (chosen.Count == 0)
-            throw new InvalidOperationException($"{h.Name} offers no display to this PC: turn one on in the laptop's Host tab (Displays for this desktop)");
+            throw new InvalidOperationException($"{h.Name} offers no display to this PC: turn one on in the laptop's Laptop tab (Desktop PCs)");
 
         var allOk = true;
         foreach (var s in chosen)
