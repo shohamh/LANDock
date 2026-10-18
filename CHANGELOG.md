@@ -6,6 +6,21 @@ a version becomes the text of its GitHub release.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-18
+
+### Added
+- **Video bitrate setting.** A general setting, default 20 Mbit/s (0 lets Moonlight choose). A display's own bitrate still overrides it.
+- **Turn a screen off or on from the notice.** Clicking a screen in the laptop's notice turns it off or on for that desktop.
+- **`tests/ui-latency.ps1`** measures how fast the settings window answers while a button is pressed.
+
+### Changed
+- **Pairing covers only the displays in use.** A laptop pairs the displays for this PC's screens; **Pair spare displays** restores
+  pairing all six.
+- **The settings window has Laptop, Desktop, Settings, Updates and About & log tabs.** Laptop (host) and Desktop (client) hold the
+  actions; Settings holds the general preferences of both sides and the sound.
+- **The settings window no longer blocks.** Processes, file reads, certificate loads and audio-device enumeration run in the
+  background (slow values are cached), and button actions (host start/stop, pairing, connect, firewall, save) run in the background.
+
 ## [0.7.0] - 2026-10-13
 
 ### Added
